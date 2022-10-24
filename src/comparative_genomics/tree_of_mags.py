@@ -6,10 +6,10 @@ from pathlib import Path
 import importlib.resources as pkg_resources
 from multiprocessing import cpu_count
 
-from fasta import FastaParser, write_fasta
-from blast import TabularBlastParser
-from orthologues import compute_orthologues, write_orthologues_to_fasta
-import database
+from comparative_genomics.fasta import FastaParser, write_fasta
+from comparative_genomics.blast import TabularBlastParser
+from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta
+import comparative_genomics.database
 
 
 VERSION = "0.1"
@@ -93,6 +93,7 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                     raise Exception(f'Fasta seq ids should be unique within each file. Duplicate: {orf["id"]}')
                 unique_orf_ids.add(orf['id'])
         run_external(f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
+        orfs_already_done = set()
         with TabularBlastParser(hmm_results_file, 'HMMSCAN') as handle:
             count = 0
             with open(gene_file, 'w') as writer:
@@ -100,6 +101,9 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                     for hit in blast_result:
                         if hit.aligned_length / hmm_lengths[hit] < 0.7:
                             continue
+                        if hit.query in orfs_already_done:
+                            continue
+                        orfs_already_done.add(hit.query)
                         orf = all_orfs[hit.query]
                         write_fasta(writer, orf)
                         count += 1

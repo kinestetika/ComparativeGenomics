@@ -6,8 +6,8 @@ from pathlib import Path
 from math import log10
 from multiprocessing import cpu_count
 
-from fasta import FastaParser, write_fasta
-from blast import TabularBlastParser
+from comparative_genomics.fasta import FastaParser, write_fasta
+from comparative_genomics.blast import TabularBlastParser
 
 VERSION = "0.1"
 START_TIME = time.monotonic()

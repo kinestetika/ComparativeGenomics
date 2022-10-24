@@ -62,7 +62,7 @@ def prep_hmms(hmm_dir):
     hmm_file = hmm_dir / 'conserved_genes.hmm'
     with open(hmm_file, 'w') as handle:
         for hmms in ('gtdb-pfam.hmm', 'gtdb-tigr.hmm', 'ribosomal.pfam.hmm', 'ribosomal.tigr.hmm', 'rpoABC.hmm'):
-            handle.write(pkg_resources.read_text(database, hmms))
+            handle.write(pkg_resources.read_text(comparative_genomics.database, hmms))
     run_external(f'hmmpress -f {hmm_file}')
     return hmm_file
 

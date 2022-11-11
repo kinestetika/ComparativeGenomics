@@ -3,13 +3,12 @@ import os
 import subprocess
 import time
 from pathlib import Path
-import importlib.resources as pkg_resources
 from multiprocessing import cpu_count
+from concurrent import futures
 
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta
-import comparative_genomics.database
 
 
 VERSION = "0.1"
@@ -46,11 +45,12 @@ def run_external(exec, stdin=None, stdout=subprocess.DEVNULL, stderr=subprocess.
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='comparative_genomics.py. (C) Marc Strous, 2022')
-    parser.add_argument('--dir', help='Folder with aminoacid fasta files, one for each genome or mag.')
+    parser.add_argument('--dir', required=True, help='Folder with aminoacid fasta files, one for each genome or mag.')
     parser.add_argument('--cpus', default=cpu_count(), help='How many cpus/threads to use (default: all = 0).')
     parser.add_argument('--file_extension', default='.faa', help='extension of aminoacid fasta files (default ".faa")')
     parser.add_argument('--delimiter', default='|', help='character to separate filenames and orfnames during '
                                                          'orthologue calling')
+    parser.add_argument('--predict_orfs_to_dir', default='', help='predict orfs and store in dir')
     parser.add_argument('--min_frequency', default=0, help='The minimum fraction of genes a taxon should have to be'
                                                              ' included in the final multiple sequence alignment '
                                                              '(default 0)')
@@ -60,11 +60,26 @@ def parse_arguments():
 def prep_hmms(hmm_dir):
     log('extracting hmms included in python package...')
     hmm_file = hmm_dir / 'conserved_genes.hmm'
-    with open(hmm_file, 'w') as handle:
-        for hmms in ('gtdb-pfam.hmm', 'gtdb-tigr.hmm', 'ribosomal.pfam.hmm', 'ribosomal.tigr.hmm', 'rpoABC.hmm'):
-            handle.write(pkg_resources.read_text(comparative_genomics.database, hmms))
+    with open(hmm_file, 'w') as writer:
+        for hmms in (Path(__file__).parent / 'database').glob('*.hmm'):
+            print(hmms)
+            with open(hmms) as reader:
+                for line in reader:
+                    writer.write(line)
     run_external(f'hmmpress -f {hmm_file}')
     return hmm_file
+
+
+def predict_orfs(nt_dir: Path, aa_dir: Path, file_extension: str, cpus: int):
+    aa_dir.mkdir(exist_ok=True, parents=True)
+    future_obj = []
+    with futures.ProcessPoolExecutor(max_workers=cpus) as executor:
+        for nt_file in nt_dir.glob('*' + file_extension):
+            if not (aa_dir / nt_file.name).exists():
+                future_obj.append(
+                    executor.submit(run_external, f'prodigal -m -f gff -q -i {nt_file} -a {aa_dir / nt_file.name}'))
+        for f in future_obj:
+            f.result()
 
 
 def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extension, delimiter: str = ''):
@@ -168,12 +183,17 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
 def main():
     print(f'This is comparative_genomics.py {VERSION}')
     args = parse_arguments()
-    fasta_dir = Path(args.dir)
     cpus = int(args.cpus)
+    fasta_dir = Path(args.dir)
+    fasta_aa_dir = Path(args.predict_orfs_to_dir)
     file_extension = args.file_extension
     delimiter = args.delimiter
     min_frequency = args.min_frequency
+    os.environ["PATH"] += ':/bio/bin:/bio/bin/hmmer3/bin'
 
+    if args.predict_orfs_to_dir:
+        predict_orfs(fasta_dir, fasta_aa_dir, file_extension, cpus)
+        fasta_dir = fasta_aa_dir
     working_dir = Path(os.getcwd())
     hmm_dir = working_dir/ 'hmm'
     genes_dir = working_dir/ 'genes'
@@ -185,6 +205,7 @@ def main():
         d.mkdir(exist_ok=True)
 
     hmm_file = prep_hmms(hmm_dir)
+    exit()
     collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter)
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
         compute_orthologues(genes_dir, cpus, file_extension, delimiter)

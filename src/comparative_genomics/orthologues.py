@@ -55,9 +55,12 @@ def parse_arguments():
 class Cluster:
     def __init__(self, parent = None):
         self.parent = parent
-        self.children = []
+        self.children = set()
         self.members = []
         self.is_done = False
+
+    def __len__(self):
+        return len(self.members)
 
 
 class SetOfOrthologues:
@@ -73,9 +76,9 @@ def make_blast_key(id1: int, id2: int) -> str:
 
 
 def merge_and_code_fasta_input(fasta_dir: Path, file_extension: str, delimiter: str, taxa_by_orf_id: list) -> Path:
-    log('Now merging and coding fasta input..')
-    unique_ids = set()
     merged_fasta_file = fasta_dir / 'merged_and_coded_fasta'
+    log(f'Now merging and coding fasta input as {merged_fasta_file}..')
+    unique_ids = set()
     with open(merged_fasta_file, 'w') as writer:
         file_count = 0
         orf_count = 0
@@ -95,17 +98,20 @@ def merge_and_code_fasta_input(fasta_dir: Path, file_extension: str, delimiter: 
                     taxa_by_orf_id.append(file_count)
                     orf_count += 1
             file_count += 1
-    log(f'Merging and coding fasta input complete; recoded and wrote {len(taxa_by_orf_id)} proteins to fasta.')
+    log(f'Merging and coding fasta input complete; recoded and wrote {len(taxa_by_orf_id)} proteins to fasta, '
+        f'{file_count} unique taxa.')
     return merged_fasta_file
 
 
 def run_diamond(fasta_file: Path, cpus: int, unique_blast_results: dict) -> Path:
-    log('Now computing homology between genes with diamond..')
     diamond_result_file = fasta_file.parent / 'diamond_results'
-    run_external(f'diamond makedb --in {fasta_file} --db {fasta_file}')
-    run_external(f'diamond blastp -d {fasta_file} -q {fasta_file} -o {diamond_result_file} -f 6 '
-                         f'--threads {cpus} --fast --max-target-seqs 10')
+    log(f'Now computing homology between genes with diamond... (results at {diamond_result_file})')
+    if not diamond_result_file.exists() or not diamond_result_file.stat().st_size:
+        run_external(f'diamond makedb --in {fasta_file} --db {fasta_file}')
+        run_external(f'diamond blastp -d {fasta_file} -q {fasta_file} -o {diamond_result_file} -f 6 '
+                             f'--threads {cpus} --fast --max-target-seqs 200')
     mcl_cluster_input_file = fasta_file.parent / 'mcl_input'
+    #if not mcl_cluster_input_file.exists() or not mcl_cluster_input_file.stat().st_size:
     with TabularBlastParser(diamond_result_file, 'BLAST') as handle:
         with open(mcl_cluster_input_file, 'w') as writer:
             for blast_result in handle:
@@ -115,16 +121,14 @@ def run_diamond(fasta_file: Path, cpus: int, unique_blast_results: dict) -> Path
                     if hit.hit == hit.query:
                         continue
                     unique_blast_results[make_blast_key(hit.hit, hit.query)] = hit.score
-                    writer.write(f'{hit.hit}\t{hit.query}\t{min(200, round(-log10(hit.evalue)))}')
-    log(f'Homology computation complete; wrote {len(unique_blast_results)} pairwise evalues to file for clustering..')
+                    writer.write(f'{hit.hit}\t{hit.query}\t{min(200, round(-log10(max(hit.evalue, 1e-100))))}\n')
+    log(f'Homology computation complete; wrote {len(unique_blast_results)} pairwise evalues '
+        f'to {mcl_cluster_input_file} for clustering..')
     return mcl_cluster_input_file
 
 
 def run_mcl(graph_input_file: Path, output_file, fineness, cpus):
-    run_external(f'mcxload -abc {graph_input_file} --write-binary --stream-mirror -write-tab {graph_input_file}.tab'
-                 f'-o {graph_input_file}.mci')
-    run_external(f'mcl {graph_input_file}.mci-I {fineness:.1f} -t {cpus} -o {graph_input_file}.clusters')
-    run_external(f'mcxdump -icl {graph_input_file}.clusters -tabr {graph_input_file}.tab  -o {output_file}')
+    run_external(f'mcl {graph_input_file} --abc -I {fineness:.1f} -t {cpus} -o {output_file}')
 
 
 def mcl_cluster(mcl_cluster_input_file: Path, cpus, fineness_steps=None) -> list[Cluster]:
@@ -136,18 +140,18 @@ def mcl_cluster(mcl_cluster_input_file: Path, cpus, fineness_steps=None) -> list
     # use mcl to cluster data de novo at each fineness step
     for fineness in range(len(fineness_steps)):
         mcl_output_file = mcl_cluster_input_file.parent / f'mcl.{fineness_steps[fineness]}'
-        run_mcl(mcl_cluster_input_file, mcl_output_file, fineness_steps[fineness], cpus)
+        if not mcl_output_file.exists() or not mcl_output_file.stat().st_size:
+            run_mcl(mcl_cluster_input_file, mcl_output_file, fineness_steps[fineness], cpus)
         with open(mcl_output_file) as reader:
             for line in reader:
                 new_cluster = Cluster()
-                for id in line.split('\t'):
-                    id = int(id)
-                    new_cluster.members.append(id)
+                new_cluster.members = [int(id) for id in line.split('\t')]
+                for orf_id in new_cluster.members:
                     try:
-                        prev_clustering_data_for_orf = clustering_data_by_orf[id]
+                        prev_clustering_data_for_orf = clustering_data_by_orf[orf_id]
                     except KeyError:
                         prev_clustering_data_for_orf = {}
-                        clustering_data_by_orf[id] = prev_clustering_data_for_orf
+                        clustering_data_by_orf[orf_id] = prev_clustering_data_for_orf
                     prev_clustering_data_for_orf[fineness] = len(all_clusters)
                 all_clusters.append(new_cluster)
     log('now creating cluster hierarchy...')
@@ -157,7 +161,7 @@ def mcl_cluster(mcl_cluster_input_file: Path, cpus, fineness_steps=None) -> list
         for cluster_id in clustering_data_by_orf[orf_id].values():
             cluster_at_fineness = all_clusters[cluster_id]
             if parent_cluster:
-                parent_cluster.children.append(cluster_at_fineness)
+                parent_cluster.children.add(cluster_at_fineness)
                 cluster_at_fineness.parent = parent_cluster
             parent_cluster = cluster_at_fineness
     log(f'Cluster generation complete; created {sum((1 for c in all_clusters if c.parent == None))} root clusters')
@@ -165,15 +169,28 @@ def mcl_cluster(mcl_cluster_input_file: Path, cpus, fineness_steps=None) -> list
 
 
 def compute_cluster_score(cluster, taxa_by_orf_id) -> float:
-    taxa_collected = {taxa_by_orf_id[orf_id] for orf_id in cluster['members']}
-    return len(taxa_collected) - (len(cluster['members'] - len(taxa_collected)))
+    taxa_collected = {taxa_by_orf_id[orf_id] for orf_id in cluster.members}
+    return 2 * len(taxa_collected) - len(cluster.members)
 
 
 def make_orthologue_from_cluster(cluster:Cluster, taxa_by_orf_id: list, unique_blast_results: dict)\
         -> SetOfOrthologues:
-    members_scores = {orf_id: sum((unique_blast_results.get(make_blast_key(orf_id, orf_id_2), 0)
-                                   for orf_id_2 in cluster.members)) for orf_id in cluster.members}
-    cluster.members.sort(key=lambda orf_id: members_scores[orf_id], reverse=True)
+    is_root_cluster = 'ROOT' if not cluster.parent else ''
+    log(f'Creating orthologues from {is_root_cluster} cluster with {len(cluster)} members.''')
+    cluster.is_done = True
+    member_scores = {}
+    for orf_id in cluster.members:
+        s = 0.0
+        for orf_id_2 in cluster.members:
+            if orf_id == orf_id:
+                continue
+            bk = make_blast_key(orf_id, orf_id_2)
+            s += unique_blast_results.get(bk, 0)
+        member_scores[orf_id] = s
+
+    #members_scores = {orf_id: sum((unique_blast_results.get(make_blast_key(orf_id, orf_id_2), 0)
+    #                               for orf_id_2 in cluster.members)) for orf_id in cluster.members}
+    cluster.members.sort(key=lambda orf_id: member_scores[orf_id], reverse=True)
     taxa_collected = set()
     my_set = SetOfOrthologues()
     for orf_id in cluster.members:
@@ -188,31 +205,28 @@ def make_orthologue_from_cluster(cluster:Cluster, taxa_by_orf_id: list, unique_b
 
 def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list, unique_blast_results: dict) \
         -> list[SetOfOrthologues]:
-    log('Now calling orthologues from cluster families...')
+    if cluster.is_done:
+        return []
+    cluster.is_done = True
+    if len(cluster) < 2:
+        return []
     orthologues = []
-    while cluster.children:
-        if cluster.is_done:
-            return []
-        cluster.is_done = True
-        score = compute_cluster_score(cluster, taxa_by_orf_id)
-        best_child_score = 0
-        best_child_cluster = None
-        for child_cluster in cluster.children:
-            child_score = compute_cluster_score(child_cluster, taxa_by_orf_id)
-            if child_score > best_child_score:
-                best_child_score = child_score
-                best_child_cluster = child_cluster
-        if best_child_score > score:
-            cluster = best_child_cluster
-        else:
-            break
-    orthologues.append(make_orthologue_from_cluster(cluster, taxa_by_orf_id, unique_blast_results))
-    if cluster.parent:
-        for sibling in cluster.parent.children:
-            if sibling is cluster:
-                continue
-            orthologues.extend(make_orthologues_from_cluster_family(sibling, taxa_by_orf_id, unique_blast_results))
-    log(f'Orthologue calling complete; created {len(orthologues)} sets of orthologous genes')
+    score = compute_cluster_score(cluster, taxa_by_orf_id)
+    is_root_cluster = 'ROOT' if not cluster.parent else ''
+    log(f'Looking to create orthologues from {is_root_cluster} cluster with {len(cluster)} members and {len(cluster.children)} children. Score {score}')
+    best_child_score = 0
+    for child_cluster in sorted(cluster.children, key=len, reverse=True):
+        child_score = compute_cluster_score(child_cluster, taxa_by_orf_id)
+        if child_score > best_child_score:
+            best_child_score = child_score
+            best_child_cluster = child_cluster
+            log(f'  child has {len(child_cluster)} and score {child_score}')
+    if best_child_score > score:
+        log('...moving on to children.')
+        for child_cluster in sorted(cluster.children, key=len, reverse=True):
+            orthologues.extend(make_orthologues_from_cluster_family(child_cluster, taxa_by_orf_id, unique_blast_results))
+    else:
+        orthologues.append(make_orthologue_from_cluster(cluster, taxa_by_orf_id, unique_blast_results))
     return orthologues
 
 
@@ -224,13 +238,14 @@ def write_orthologues_to_fasta(merged_and_coded_fasta_file:Path, orthologues_by_
     else:
         H = {'O': '', 'P' : ''}
     with FastaParser(merged_and_coded_fasta_file) as fasta_reader:
-        for orf in tqdm(fasta_reader, len(taxa_by_orf_id)):
+        for orf in tqdm(fasta_reader, total=len(taxa_by_orf_id)):
             if result := orthologues_by_orf_id.get(int(orf['id']), 0):
                 if 'P' == result[0:1] and not include_paralogues:
                     continue
                 output_file = output_dir / f'{result[1:]}.faa'
-                space_index = orf['descr'].index[' ']
-                recoded_orf = {'id': orf['descr'][0, space_index],
+                space_index = orf['descr'].index(' ')
+                # print(space_index, result[0:1], orf['descr'])
+                recoded_orf = {'id': orf['descr'][0:space_index],
                                'seq': orf['seq'],
                                'descr':  "{} {}".format(H[result[0:1]], orf['descr'][space_index + 1]).strip()
                                }
@@ -245,10 +260,12 @@ def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa'
     mcl_cluster_input_file = run_diamond(merged_and_coded_fasta_file, cpus, unique_blast_results)
     clusters = mcl_cluster(mcl_cluster_input_file, cpus)
     orthologues = []
+    log('Now calling orthologues from cluster families...')
     for cluster in clusters:
         if cluster.parent:
             continue  # only take the "root" clusters, the kids will be processed by
         orthologues.extend(make_orthologues_from_cluster_family(cluster, taxa_by_orf_id, unique_blast_results))
+    log(f'Orthologue calling complete; created {len(orthologues)} set(s) of orthologous genes')
     orthologues_by_orf_id = {}
     for i in range(len(orthologues)):
         for orf_id in orthologues[i].orthologues:

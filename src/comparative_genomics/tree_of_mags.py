@@ -51,7 +51,7 @@ def parse_arguments():
     parser.add_argument('--delimiter', default='|', help='character to separate filenames and orfnames during '
                                                          'orthologue calling')
     parser.add_argument('--predict_orfs_to_dir', default='', help='predict orfs and store in dir')
-    parser.add_argument('--min_frequency', default=0, help='The minimum fraction of genes a taxon should have to be'
+    parser.add_argument('--min_frequency', default=0.8, help='The minimum fraction of genes a taxon should have to be'
                                                              ' included in the final multiple sequence alignment '
                                                              '(default 0)')
     return parser.parse_args()
@@ -62,10 +62,10 @@ def prep_hmms(hmm_dir):
     hmm_file = hmm_dir / 'conserved_genes.hmm'
     with open(hmm_file, 'w') as writer:
         for hmms in (Path(__file__).parent / 'database').glob('*.hmm'):
+            if hmms.name.startswith('ribosomal') or hmms.name.startswith('rpo'):
+                continue
             print(hmms)
-            with open(hmms) as reader:
-                for line in reader:
-                    writer.write(line)
+            run_external(f'hmmconvert {hmms}', stdout=writer)
     run_external(f'hmmpress -f {hmm_file}')
     return hmm_file
 
@@ -82,7 +82,7 @@ def predict_orfs(nt_dir: Path, aa_dir: Path, file_extension: str, cpus: int):
             f.result()
 
 
-def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extension, delimiter: str = ''):
+def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extension, delimiter: str = '', cpus: int = 1):
     log('Now collecting target sequences from fasta files using hmmscan...')
     all_orfs = {}
     hmm_lengths = {}
@@ -94,57 +94,78 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                 hmm_lengths[name] = int(line[4:].strip())
     log(f'HMM database has {len(hmm_lengths)} HMM profiles.')
 
-    for file in sorted(fasta_dir.glob(f'*{file_extension}')):
-        fasta_file = fasta_dir / file.name
-        hmm_results_file = genes_dir / f'{file.name}.hmm-results'
-        gene_file = genes_dir / file.name
-        unique_orf_ids = set()
-        with FastaParser(fasta_file) as fasta_reader:
-            for orf in fasta_reader:
-                all_orfs[orf.id] = orf
-                if delimiter and delimiter in orf['id']:
-                    raise Exception('Delimiter should not occur in ids of any fasta seq.')
-                if orf['id'] in unique_orf_ids:
-                    raise Exception(f'Fasta seq ids should be unique within each file. Duplicate: {orf["id"]}')
-                unique_orf_ids.add(orf['id'])
-        run_external(f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
-        orfs_already_done = set()
-        with TabularBlastParser(hmm_results_file, 'HMMSCAN') as handle:
-            count = 0
-            with open(gene_file, 'w') as writer:
-                for blast_result in handle:
-                    for hit in blast_result:
-                        if hit.aligned_length / hmm_lengths[hit] < 0.7:
-                            continue
-                        if hit.query in orfs_already_done:
-                            continue
-                        orfs_already_done.add(hit.query)
-                        orf = all_orfs[hit.query]
-                        write_fasta(writer, orf)
-                        count += 1
-                        break
-        log(f'{file}: Wrote {count} seqs to fasta.')
+    with futures.ProcessPoolExecutor(max_workers=cpus) as executor:
+        future_obj = {}
+        for file in sorted(fasta_dir.glob(f'*{file_extension}')):
+            fasta_file = fasta_dir / file.name
+            hmm_results_file = genes_dir / f'{file.name}.hmm-results'
+            gene_file = genes_dir / file.name
+            unique_orf_ids = set()
+            with FastaParser(fasta_file) as fasta_reader:
+                for orf in fasta_reader:
+                    all_orfs[orf['id']] = orf
+                    if delimiter and delimiter in orf['id']:
+                        raise Exception('Delimiter should not occur in ids of any fasta seq.')
+                    if orf['id'] in unique_orf_ids:
+                        raise Exception(f'Fasta seq ids should be unique within each file. Duplicate: {orf["id"]}')
+                    unique_orf_ids.add(orf['id'])
+                if hmm_results_file.exists() and hmm_results_file.stat().st_size:
+                    future_obj[hmm_results_file] = 1
+                else:
+                    future_obj[hmm_results_file] = executor.submit(run_external,
+                                        f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
+
+        for f in future_obj.keys():
+            gene_file = genes_dir / (f.name + file_extension)
+            if f.exists() and f.stat().st_size:
+                if not gene_file.exists() or not gene_file.stat().st_size:
+                    orfs_already_done = set()
+                    with TabularBlastParser(f, 'HMMSCAN_DOM_TABLE') as handle:
+                        count = 0
+                        with open(gene_file, 'w') as writer:
+                            for blast_result in handle:
+                                for hit in blast_result:
+                                    if hit.aligned_length / hmm_lengths[hit.hit] < 0.7:
+                                        continue
+                                    if hit.query in orfs_already_done:
+                                        continue
+                                    orfs_already_done.add(hit.query)
+                                    orf = all_orfs[hit.query]
+                                    write_fasta(writer, orf)
+                                    count += 1
+                                    break
+                        log(f'{gene_file}: Wrote {count} seqs to fasta.')
 
 
-def align_seqs(src_dir: Path, dest_dir: Path, file_extension):
+def run_align_programs(src_file, raw_result_file, final_result_file):
+    run_external(f'clustalo -i {src_file} -o {raw_result_file} -t Protein')
+    run_external(f'java -jar /bio/bin/BMGE/src/BMGE.jar -i {raw_result_file} -t AA -o {final_result_file}')
+
+
+def align_seqs(src_dir: Path, dest_dir: Path, file_extension, cpus: int):
     log(f'Now aligning fasta files in {src_dir}...')
-    for file in sorted(src_dir.glob(f'*{file_extension}')):
-        raw_result_file = dest_dir / f'{file.name}.raw'
-        final_result_file = dest_dir / file.name
-        run_external('clustalo ...')
-        run_external('prune alignments ...')
+    with futures.ProcessPoolExecutor(max_workers=cpus) as executor:
+        future_obj = {}
+        for src_file in sorted(src_dir.glob(f'*{file_extension}')):
+            raw_result_file = dest_dir / f'{src_file.name}.raw'
+            final_result_file = dest_dir / src_file.name
+            if not final_result_file.exists() or not final_result_file.stat().st_size:
+                run_align_programs(src_file, raw_result_file, final_result_file)
+                # future_obj[src_file] = executor.submit(run_align_programs, src_file, raw_result_file, final_result_file)
+        for ff in future_obj.values():
+            ff.result()
 
 
 def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, min_frequency = 0):
-    log(f'Now aligning fasta files in {src_dir}...')
+    log(f'Now concatenating alignments in {src_dir}...')
     alignments = []
-    lengths = []
     unique_taxa = set()
+    file_extension = '.faa.raw'
     for file in sorted(src_dir.glob(f'*{file_extension}')):
         file = src_dir / file
         alignment = {}
         length = 0
-        with FastaParser(file) as fasta_reader:
+        with FastaParser(file, cleanup_seq=False) as fasta_reader:
             for orf in fasta_reader:
                 taxon, orf_id = orf['id'].split(delimiter)
                 alignment[taxon] = orf
@@ -155,29 +176,62 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
                 else:
                     length = len(orf['seq'])
             alignments.append(alignment)
-            lengths.append(length)
-    occurences = {}
-    sorted_taxa = sorted([unique_taxa])
-    concatenated_alignment = {}
-    for taxon in sorted_taxa:
-        concatenated_fasta_seq = {'id': taxon, 'seq': ''}
-        for i in range(len(alignments)):
-            alignment = alignments[i]
+    taxa_removed = set()
+    log(f'Parsed {len(alignments)}) alignments from fasta files with {len(unique_taxa)} taxa.')
+
+    remaining_alignments = []
+    for alignment in alignments:
+        if len(alignment) >= min_frequency * len(unique_taxa):
+            remaining_alignments.append(alignment)
+    log(f'Keeping {len(remaining_alignments)}/{len(alignments)} alignments with >= {int(min_frequency * len(unique_taxa))} taxa.')
+    alignments = remaining_alignments
+
+    remaining_taxa = []
+    for taxon in unique_taxa:
+        freq = 0
+        for alignment in alignments:
             if taxon in alignment.keys():
+                freq += 1
+        if freq >= min_frequency * len(alignments):
+            remaining_taxa.append(taxon)
+    log(f'Keeping {len(remaining_taxa)}/{len(unique_taxa)} taxa with >= {int(min_frequency * len(alignments))} alignments.')
+    unique_taxa = sorted(remaining_taxa)
+
+    concatenated_alignment = {}
+    concatenated_alignment_length = 0
+    for taxon in unique_taxa:
+        concatenated_fasta_seq = {'id': taxon, 'seq': ''}
+        count = 0
+        for alignment in alignments:
+            length = 0
+            for t, s in alignment.items():
+                length = len(s['seq'])
+                break
+            try:
                 concatenated_fasta_seq['seq'] += alignment[taxon]['seq']
-                prev_occurence = occurences.get(taxon, 0)
-                occurences[taxon] = prev_occurence + 1
-            else:
-                concatenated_fasta_seq['seq'] += '-' * lengths[i]
+                count += 1
+            except KeyError:
+                concatenated_fasta_seq['seq'] += '-' * length
+        if not concatenated_alignment:
+            concatenated_alignment_length = len(concatenated_fasta_seq["seq"])
+            log(f'Concatenated alignment has {concatenated_alignment_length} positions.')
         concatenated_alignment[taxon] = concatenated_fasta_seq
+        #log(f'{count:4d} {taxon}')
+    success_count = 0
+    for pos in range(concatenated_alignment_length):
+        count = 0
+        for taxon in unique_taxa:
+            seq = concatenated_alignment[taxon]['seq']
+            if seq[pos].isalnum():
+                count += 1
+        if count >= min_frequency * len(unique_taxa):
+            success_count += 1
+    log(f'{success_count}/{concatenated_alignment_length} positions ({success_count/concatenated_alignment_length:.1%}) '
+        f'have < {1-min_frequency:.1%} gaps.')
+
     with open(src_dir / 'concatenated_alignment', 'w') as writer:
-        for taxon in sorted_taxa:
-            frequency = occurences[taxon]/len(alignments)
-            if occurences[taxon] >= 1 and frequency >= min_frequency:
-                write_fasta(writer, concatenated_alignment[taxon])
-                log(f'[taxon] Written, frequency {frequency:.2f}')
-            else:
-                log(f'[taxon] Skipped, frequency {frequency:.2f} < minimum ({min_frequency:.2f})')
+        for taxon in unique_taxa:
+            write_fasta(writer, concatenated_alignment[taxon])
 
 
 def main():
@@ -205,14 +259,14 @@ def main():
         d.mkdir(exist_ok=True)
 
     hmm_file = prep_hmms(hmm_dir)
-    exit()
-    collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter)
+    collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter, cpus)
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
         compute_orthologues(genes_dir, cpus, file_extension, delimiter)
     write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id, orthologue_dir,
                                include_paralogues=False)
-    align_seqs(orthologue_dir, alignments_dir, file_extension)
-    concatenate_alignments(alignments_dir, file_extension, delimiter, min_frequency)
+    align_seqs(orthologue_dir, alignments_dir, '.faa', cpus)
+    # number_of_taxa = set(taxa_by_orf_id.values())
+    concatenate_alignments(alignments_dir, '.faa', delimiter, min_frequency)
 
 if __name__ == "__main__":
     main()

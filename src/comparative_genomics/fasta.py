@@ -21,7 +21,7 @@ def _parse_fasta_header(line:str) -> dict:
 
 
 class FastaParser:
-    def __init__(self, path, cleanup_seq=True):
+    def __init__(self, path, cleanup_seq=False):
         self.path = path
         self.handle = None
         self.cleanup_seq = cleanup_seq
@@ -78,7 +78,7 @@ def write_fasta(handle, fasta, line_length=80):
         raise Exception('Attempt to write zero-length sequence to fasta.')
     handle.write(f'>{fasta["id"]}')
     try:
-        if fasta["descr"] and fasta["descr"] is not np.nan:
+        if fasta["descr"] and isinstance(fasta["descr"], str):
             handle.write(f' {fasta["descr"]}')
     except KeyError:
         pass

@@ -222,24 +222,6 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
     taxa_removed = set()
     log(f'Parsed {len(alignments)} alignments from fasta files with {len(unique_taxa)} taxa.')
 
-    remaining_alignments = []
-    for alignment in alignments:
-        if len(alignment) >= min_frequency * len(unique_taxa):
-            remaining_alignments.append(alignment)
-    log(f'Keeping {len(remaining_alignments)}/{len(alignments)} alignments with >= {int(min_frequency * len(unique_taxa))} taxa.')
-    alignments = remaining_alignments
-
-    remaining_taxa = []
-    for taxon in unique_taxa:
-        freq = 0
-        for alignment in alignments:
-            if taxon in alignment.keys():
-                freq += 1
-        if freq >= min_frequency * len(alignments):
-            remaining_taxa.append(taxon)
-    log(f'Keeping {len(remaining_taxa)}/{len(unique_taxa)} taxa with >= {int(min_frequency * len(alignments))} alignments.')
-    unique_taxa = sorted(remaining_taxa)
-
     concatenated_alignment = {}
     concatenated_alignment_length = 0
     for taxon in unique_taxa:
@@ -272,9 +254,15 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
     log(f'{success_count}/{concatenated_alignment_length} positions ({success_count/concatenated_alignment_length:.1%}) '
         f'have < {1-min_frequency:.1%} gaps.')
 
+    seqs_done = set()
     with open(src_dir / 'concatenated_alignment', 'w') as writer:
         for taxon in unique_taxa:
-            write_fasta(writer, concatenated_alignment[taxon])
+            a = concatenated_alignment[taxon]
+            if a['seq'] in seqs_done:
+                log(f'skipping {taxon} - duplicated sequence.')
+            else:
+                seqs_done.add(a['seq'])
+            write_fasta(writer, a)
 
 
 def main():

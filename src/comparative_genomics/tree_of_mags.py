@@ -8,7 +8,7 @@ from concurrent import futures
 
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
-from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta
+from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
 VERSION = "0.1"
@@ -51,7 +51,7 @@ def parse_arguments():
     parser.add_argument('--delimiter', default='|', help='character to separate filenames and orfnames during '
                                                          'orthologue calling')
     parser.add_argument('--predict_orfs_to_dir', default='', help='predict orfs and store in dir')
-    parser.add_argument('--min_frequency', default=0.8, help='The minimum fraction of genes a taxon should have to be'
+    parser.add_argument('--min_frequency', default=0.6, help='The minimum fraction of genes a taxon should have to be'
                                                              ' included in the final multiple sequence alignment '
                                                              '(default 0)')
     return parser.parse_args()
@@ -137,8 +137,51 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                         log(f'{gene_file}: Wrote {count} seqs to fasta.')
 
 
-def run_align_programs(src_file, raw_result_file, final_result_file):
-    run_external(f'clustalo -i {src_file} -o {raw_result_file} -t Protein')
+def filter_orthologues(taxa_by_orf_id: list, orthologues: list[SetOfOrthologues], orthologues_by_orf_id: dict,
+                       min_frequency: float, fasta_dir: Path, file_extension: str):
+    unique_taxa = set(taxa_by_orf_id)
+    log(f'Now filtering {len(orthologues)} orthologues for representation of and among {len(unique_taxa)} taxa.')
+    remaining_orthologues = {}
+    removed_orthologues = set()
+    for i in range(len(orthologues)):
+        o = orthologues[i]
+        if len(o.orthologues) >= min_frequency * len(unique_taxa):
+            remaining_orthologues[i] = o
+        else:
+            removed_orthologues.add(i)
+    log(f'Keeping {len(remaining_orthologues)}/{len(orthologues)} orthologues with >= {int(min_frequency * len(unique_taxa))} taxa.')
+
+    remaining_taxa = []
+    removed_taxa = set()
+    taxa_names = sorted(fasta_dir.glob(f'*{file_extension}'))
+    for taxon in unique_taxa:
+        freq = 0
+        for o in remaining_orthologues.values():
+            for orf_id in o.orthologues:
+                if taxa_by_orf_id[orf_id] == taxon:
+                    freq += 1
+                    break
+        if freq >= min_frequency * len(remaining_orthologues):
+            remaining_taxa.append(taxon)
+        else:
+            removed_taxa.add(taxon)
+            log(f'{taxa_names[taxon]} just got removed from analysis.')
+    log(f'Keeping {len(remaining_taxa)}/{len(unique_taxa)} taxa with >= {int(min_frequency * len(remaining_orthologues))} remaining orthologues.')
+
+    # Now sort through alignment source files and weed out orthologues and taxa with poor representation
+    prev_orf_count = len(orthologues_by_orf_id)
+    for orf_id in range(len(taxa_by_orf_id)):
+        if orthologue_id := orthologues_by_orf_id.get(orf_id, 0):
+            if int(orthologue_id[1:]) in removed_orthologues:
+                orthologues_by_orf_id.pop(orf_id)
+            elif taxa_by_orf_id[orf_id] in removed_taxa:
+                orthologues_by_orf_id.pop(orf_id)
+    log(f'{len(orthologues_by_orf_id)}/{prev_orf_count} total proteins remaining in analysis.')
+
+
+
+def run_align_programs(src_file: Path, raw_result_file: Path, final_result_file: Path, cpus: int):
+    run_external(f'clustalo -i {src_file} -o {raw_result_file} -t Protein --threads={cpus}')
     run_external(f'java -jar /bio/bin/BMGE/src/BMGE.jar -i {raw_result_file} -t AA -o {final_result_file}')
 
 
@@ -150,7 +193,7 @@ def align_seqs(src_dir: Path, dest_dir: Path, file_extension, cpus: int):
             raw_result_file = dest_dir / f'{src_file.name}.raw'
             final_result_file = dest_dir / src_file.name
             if not final_result_file.exists() or not final_result_file.stat().st_size:
-                run_align_programs(src_file, raw_result_file, final_result_file)
+                run_align_programs(src_file, raw_result_file, final_result_file, cpus)
                 # future_obj[src_file] = executor.submit(run_align_programs, src_file, raw_result_file, final_result_file)
         for ff in future_obj.values():
             ff.result()
@@ -177,7 +220,7 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
                     length = len(orf['seq'])
             alignments.append(alignment)
     taxa_removed = set()
-    log(f'Parsed {len(alignments)}) alignments from fasta files with {len(unique_taxa)} taxa.')
+    log(f'Parsed {len(alignments)} alignments from fasta files with {len(unique_taxa)} taxa.')
 
     remaining_alignments = []
     for alignment in alignments:
@@ -262,6 +305,7 @@ def main():
     collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter, cpus)
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
         compute_orthologues(genes_dir, cpus, file_extension, delimiter)
+    filter_orthologues(taxa_by_orf_id, orthologues, orthologues_by_orf_id, min_frequency, genes_dir, file_extension)
     write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id, orthologue_dir,
                                include_paralogues=False)
     align_seqs(orthologue_dir, alignments_dir, '.faa', cpus)

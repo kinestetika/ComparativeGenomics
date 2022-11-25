@@ -240,7 +240,7 @@ def write_orthologues_to_fasta(merged_and_coded_fasta_file:Path, orthologues_by_
     with FastaParser(merged_and_coded_fasta_file) as fasta_reader:
         for orf in tqdm(fasta_reader, total=len(taxa_by_orf_id)):
             if result := orthologues_by_orf_id.get(int(orf['id']), 0):
-                if 'P' == result[0:1] and not include_paralogues:
+                if result.startswith('P') and not include_paralogues:
                     continue
                 output_file = output_dir / f'{result[1:]}.faa'
                 space_index = orf['descr'].index(' ')
@@ -252,8 +252,12 @@ def write_orthologues_to_fasta(merged_and_coded_fasta_file:Path, orthologues_by_
                 with open(output_file, 'a') as writer:
                     write_fasta(writer, recoded_orf)
 
-
 def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa', delimiter: str = '|') -> tuple:
+    # 'orthologues' is a list of 'SetOfOrthologues'. A 'SetOfOrthologues' contains 'paralogues' and 'orthologues'.
+    # These are both lists with 'orf ids' (int) in 'merged_and_coded_fasta_file'.
+    # 'orthologues_by_orf_id' is a dict of 'orf_ids' with values starting with 'O' or 'P' followed by the index of
+    # the 'SetOfOrthologues' in the 'orthologues' list.
+    # 'taxa_by_orf_id' is a list with 'orf_ids' (int) as indexes and with original file numbers (int) as values.
     taxa_by_orf_id = []
     unique_blast_results = {}
     merged_and_coded_fasta_file = merge_and_code_fasta_input(fasta_dir, file_extension, delimiter, taxa_by_orf_id)

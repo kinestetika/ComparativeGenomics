@@ -2,6 +2,7 @@ import argparse
 import os
 import subprocess
 import time
+import shutil
 from pathlib import Path
 from multiprocessing import cpu_count
 from concurrent import futures
@@ -75,6 +76,11 @@ def predict_orfs(nt_dir: Path, aa_dir: Path, file_extension: str, cpus: int):
     future_obj = []
     with futures.ProcessPoolExecutor(max_workers=cpus) as executor:
         for nt_file in nt_dir.glob('*' + file_extension):
+            if " " in nt_file.name:
+                new_name = nt_file.name.replace(' ', '_')
+                shutil.move(nt_file, nt_file.parent / new_name)
+                log(f'renamed "{nt_file.name}" to "{new_name}"')
+                nt_file = nt_file.parent / new_name
             if not (aa_dir / nt_file.name).exists():
                 future_obj.append(
                     executor.submit(run_external, f'prodigal -m -f gff -q -i {nt_file} -a {aa_dir / nt_file.name}'))
@@ -115,12 +121,14 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                     future_obj[hmm_results_file] = executor.submit(run_external,
                                         f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
 
-        for f in future_obj.keys():
-            gene_file = genes_dir / (f.name + file_extension)
-            if f.exists() and f.stat().st_size:
+        for file, future in future_obj.items():
+            gene_file = genes_dir / (file.name + file_extension)
+            if isinstance(future, futures.Future):
+                future.result()
+            if file.exists() and file.stat().st_size:
                 if not gene_file.exists() or not gene_file.stat().st_size:
                     orfs_already_done = set()
-                    with TabularBlastParser(f, 'HMMSCAN_DOM_TABLE') as handle:
+                    with TabularBlastParser(file, 'HMMSCAN_DOM_TABLE') as handle:
                         count = 0
                         with open(gene_file, 'w') as writer:
                             for blast_result in handle:

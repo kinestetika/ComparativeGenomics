@@ -262,15 +262,17 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
     log(f'{success_count}/{concatenated_alignment_length} positions ({success_count/concatenated_alignment_length:.1%}) '
         f'have < {1-min_frequency:.1%} gaps.')
 
-    seqs_done = set()
+    seqs_done = {}
     with open(src_dir / 'concatenated_alignment', 'w') as writer:
         for taxon in unique_taxa:
             a = concatenated_alignment[taxon]
-            if a['seq'] in seqs_done:
-                log(f'skipping {taxon} - duplicated sequence.')
-            else:
-                seqs_done.add(a['seq'])
-            write_fasta(writer, a)
+            try:
+                dupl_id = seqs_done[a['seq']]
+                log(f'skipping {taxon} - identical to {dupl_id}.')
+            except KeyError:
+                seqs_done[a['seq']] = a['id']
+                write_fasta(writer, a)
+
 
 
 def main():

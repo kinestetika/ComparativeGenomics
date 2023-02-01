@@ -182,7 +182,7 @@ def make_orthologue_from_cluster(cluster:Cluster, taxa_by_orf_id: list, unique_b
     for orf_id in cluster.members:
         s = 0.0
         for orf_id_2 in cluster.members:
-            if orf_id == orf_id:
+            if orf_id == orf_id_2:
                 continue
             bk = make_blast_key(orf_id, orf_id_2)
             s += unique_blast_results.get(bk, 0)

@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name='comparative_genomics',
-    version='0.3',
+    version='0.4',
     packages=setuptools.find_packages(where='src'),
     url='https://github.com/kinestetika/comparative_genomics',
     license='MIT',
@@ -24,6 +24,7 @@ setuptools.setup(
     keywords='taxonomy phylogeny alignment',
     project_urls={'Source': 'https://github.com/kinestetika/comparative_genomics'},
     package_dir={'': 'src'},
+    package_data={'': ['gtdb-pfam.hmm', 'gtdb-tigr.hmm', 'ribosomal.pfam.hmm', 'ribosomal.tigr.hmm', 'rpoABC.hmm']},
     python_requires='>=3.10',
     install_requires=[],
     extras_require={  # Optional

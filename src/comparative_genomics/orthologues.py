@@ -9,7 +9,7 @@ from multiprocessing import cpu_count
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.3"
+VERSION = "0.4"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 

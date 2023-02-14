@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.1"
+VERSION = "0.4"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -61,8 +61,10 @@ def parse_arguments():
 def prep_hmms(hmm_dir):
     log('extracting hmms included in python package...')
     hmm_file = hmm_dir / 'conserved_genes.hmm'
+    print(Path(__file__))
     with open(hmm_file, 'w') as writer:
         for hmms in (Path(__file__).parent / 'database').glob('*.hmm'):
+
             if hmms.name.startswith('ribosomal') or hmms.name.startswith('rpo'):
                 continue
             print(hmms)

@@ -9,7 +9,7 @@ from multiprocessing import cpu_count
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.5"
+VERSION = "0.6"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -50,6 +50,9 @@ def parse_arguments():
     parser.add_argument('--delimiter', default='|', help='Character to separate filenames and orfnames in output')
     parser.add_argument('--skip_paralogues', default=False,  action="store_true",
                         help='Do not write paralogues to output fasta file (default: False).')
+    parser.add_argument('--minimum_representation', default=3,  help='Minimum # of taxa represented to write a set of'
+                                                                     'orthologues to fasta in the final output (default 3).')
+
 
 
     return parser.parse_args()
@@ -206,7 +209,8 @@ def make_orthologue_from_cluster(cluster:Cluster, taxa_by_orf_id: list, unique_b
     return my_set
 
 
-def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list, unique_blast_results: dict) \
+def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list, unique_blast_results: dict,
+                                         minimum_representation) \
         -> list[SetOfOrthologues]:
     if cluster.is_done:
         return []
@@ -229,7 +233,9 @@ def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list,
         for child_cluster in sorted(cluster.children, key=len, reverse=True):
             orthologues.extend(make_orthologues_from_cluster_family(child_cluster, taxa_by_orf_id, unique_blast_results))
     else:
-        orthologues.append(make_orthologue_from_cluster(cluster, taxa_by_orf_id, unique_blast_results))
+        new_set = make_orthologue_from_cluster(cluster, taxa_by_orf_id, unique_blast_results)
+        if len(new_set.orthologues) >= minimum_representation:
+            orthologues.append(new_set)
     return orthologues
 
 
@@ -266,7 +272,8 @@ def write_orthologues_to_fasta(merged_and_coded_fasta_file:Path, orthologues_by_
                     write_fasta(writer, recoded_orf)
                 count += 1
 
-def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa', delimiter: str = '|') -> tuple:
+def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa', delimiter: str = '|',
+                        minimum_representation = 3) -> tuple:
     # 'orthologues' is a list of 'SetOfOrthologues'. A 'SetOfOrthologues' contains 'paralogues' and 'orthologues'.
     # These are both lists with 'orf ids' (int) in 'merged_and_coded_fasta_file'.
     # 'orthologues_by_orf_id' is a dict of 'orf_ids' with values starting with 'O' or 'P' followed by the index of
@@ -282,7 +289,8 @@ def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa'
     for cluster in clusters:
         if cluster.parent:
             continue  # only take the "root" clusters, the kids will be processed by
-        orthologues.extend(make_orthologues_from_cluster_family(cluster, taxa_by_orf_id, unique_blast_results))
+        orthologues.extend(make_orthologues_from_cluster_family(cluster, taxa_by_orf_id, unique_blast_results,
+                                                                minimum_representation))
     log(f'Orthologue calling complete; created {len(orthologues)} set(s) of orthologous genes')
     orthologues_by_orf_id = {}
     for i in range(len(orthologues)):
@@ -297,7 +305,8 @@ def main():
     print(f'This is orthologues.py {VERSION}')
     args = parse_arguments()
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
-        compute_orthologues(Path(args.input_dir), int(args.cpus), args.file_extension, args.delimiter)
+        compute_orthologues(Path(args.input_dir), int(args.cpus), args.file_extension, args.delimiter,
+                            args.minimum_representation)
     write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id,
                                Path(args.output_dir), args.delimiter, args.skip_paralogues)
 

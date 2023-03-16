@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.4"
+VERSION = "0.5"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -311,6 +311,10 @@ def main():
     align_seqs(orthologue_dir, alignments_dir, '.faa', cpus)
     # number_of_taxa = set(taxa_by_orf_id.values())
     concatenate_alignments(alignments_dir, '.faa', delimiter, min_frequency)
+    log('Done!')
+    log('After running this script, you can for example use:')
+    log('raxmlHPC-PTHREADS -s concatenated-alignment -n tree -m PROTGAMMALG -f a -p 13 -x 123 -# 100 -T 20')
+
 
 if __name__ == "__main__":
     main()

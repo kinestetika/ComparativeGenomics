@@ -9,7 +9,7 @@ from multiprocessing import cpu_count
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.4"
+VERSION = "0.5"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -46,8 +46,11 @@ def parse_arguments():
     parser.add_argument('--input_dir', help='Dir with aminoacid fasta files, one for each genome or mag.')
     parser.add_argument('--output_dir', help='Dir to write output to')
     parser.add_argument('--cpus', default=cpu_count(), help='How many cpus/threads to use (default: all).')
-    parser.add_argument('--file_extension', default='.faa', help='extension of aminoacid fasta files (default ".faa")')
-    parser.add_argument('--delimiter', default='|', help='character to separate filenames and orfnames in output')
+    parser.add_argument('--file_extension', default='.faa', help='Extension of aminoacid fasta files (default ".faa")')
+    parser.add_argument('--delimiter', default='|', help='Character to separate filenames and orfnames in output')
+    parser.add_argument('--skip_paralogues', default=False,  action="store_true",
+                        help='Do not write paralogues to output fasta file (default: False).')
+
 
     return parser.parse_args()
 
@@ -92,7 +95,7 @@ def merge_and_code_fasta_input(fasta_dir: Path, file_extension: str, delimiter: 
                     unique_ids.add(orf['id'])
                     recoded_orf = {'id': f'{orf_count}',
                                    'seq': orf['seq'],
-                                   'descr': f' {file.name}{delimiter}{orf["id"]} {orf["descr"]}'.strip()
+                                   'descr': f'{file.stem}{delimiter}{orf["id"]} {orf["descr"]}'.strip()
                                   }
                     write_fasta(writer, recoded_orf)
                     taxa_by_orf_id.append(file_count)
@@ -231,26 +234,37 @@ def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list,
 
 
 def write_orthologues_to_fasta(merged_and_coded_fasta_file:Path, orthologues_by_orf_id: dict[int, str],
-                               taxa_by_orf_id: dict, output_dir: Path, include_paralogues: bool = True):
+                               taxa_by_orf_id: dict, output_dir: Path, delimiter: str, skip_paralogues: bool = False):
     log('Now writing a fasta file for each set of orthologous genes...')
-    if include_paralogues:
+    if not skip_paralogues:
         H = {'O': '[Orthologue]', 'P' : '[Paralogue]'}
     else:
         H = {'O': '', 'P' : ''}
+    count = 1
     with FastaParser(merged_and_coded_fasta_file) as fasta_reader:
         for orf in tqdm(fasta_reader, total=len(taxa_by_orf_id)):
             if result := orthologues_by_orf_id.get(int(orf['id']), 0):
-                if result.startswith('P') and not include_paralogues:
+                if result.startswith('P') and skip_paralogues:
                     continue
                 output_file = output_dir / f'{result[1:]}.faa'
-                space_index = orf['descr'].index(' ')
-                # print(space_index, result[0:1], orf['descr'])
-                recoded_orf = {'id': orf['descr'][0:space_index],
+                try:
+                    space_index = orf['descr'].index(' ')
+                    orf_id = orf['descr'][0:space_index].split(delimiter)
+                except ValueError:  # This happens when the original orf had no description
+                    try:
+                        orf_id = orf['descr'].split(delimiter)
+                    except:
+                        print(f'Difficulty with orf descr: {orf["descr"]}')
+                except:
+                    print(f'Difficulty with orf descr: {orf["descr"]}')
+                orf_id = f'{orf_id[0]}{delimiter}{count}'
+                recoded_orf = {'id': orf_id,
                                'seq': orf['seq'],
-                               'descr':  "{} {}".format(H[result[0:1]], orf['descr'][space_index + 1]).strip()
+                               'descr':  "{} {}".format(H[result[0:1]], orf['descr']).strip()
                                }
                 with open(output_file, 'a') as writer:
                     write_fasta(writer, recoded_orf)
+                count += 1
 
 def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa', delimiter: str = '|') -> tuple:
     # 'orthologues' is a list of 'SetOfOrthologues'. A 'SetOfOrthologues' contains 'paralogues' and 'orthologues'.
@@ -283,9 +297,9 @@ def main():
     print(f'This is orthologues.py {VERSION}')
     args = parse_arguments()
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
-        compute_orthologues(Path(args.input_dir), int(args.cpus), args.file_extension)
+        compute_orthologues(Path(args.input_dir), int(args.cpus), args.file_extension, args.delimiter)
     write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id,
-                               Path(args.output_dir))
+                               Path(args.output_dir), args.delimiter, args.skip_paralogues)
 
 
 if __name__ == "__main__":

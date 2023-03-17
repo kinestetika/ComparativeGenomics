@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.7"
+VERSION = "0.9"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -287,7 +287,7 @@ def main():
     fasta_aa_dir = Path(args.predict_orfs_to_dir)
     file_extension = args.file_extension
     delimiter = args.delimiter
-    minimum_representation = args.minimum_representation
+    minimum_representation = int(args.minimum_representation)
     min_frequency = args.min_frequency
     os.environ["PATH"] += ':/bio/bin:/bio/bin/hmmer3/bin'
 

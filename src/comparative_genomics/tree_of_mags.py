@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.5"
+VERSION = "0.7"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -55,6 +55,8 @@ def parse_arguments():
     parser.add_argument('--min_frequency', default=0.6, help='The minimum fraction of genes a taxon should have to be'
                                                              ' included in the final multiple sequence alignment '
                                                              '(default 0)')
+    parser.add_argument('--minimum_representation', default=3, help='Minimum # of taxa represented to include a gene'
+                                                                     'in the final alignment output (default 3).')
     return parser.parse_args()
 
 
@@ -285,6 +287,7 @@ def main():
     fasta_aa_dir = Path(args.predict_orfs_to_dir)
     file_extension = args.file_extension
     delimiter = args.delimiter
+    minimum_representation = args.minimum_representation
     min_frequency = args.min_frequency
     os.environ["PATH"] += ':/bio/bin:/bio/bin/hmmer3/bin'
 
@@ -304,10 +307,10 @@ def main():
     hmm_file = prep_hmms(hmm_dir)
     collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter, cpus)
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
-        compute_orthologues(genes_dir, cpus, file_extension, delimiter)
+        compute_orthologues(genes_dir, cpus, file_extension, delimiter, minimum_representation)
     filter_orthologues(taxa_by_orf_id, orthologues, orthologues_by_orf_id, min_frequency, genes_dir, file_extension)
     write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id, orthologue_dir,
-                               include_paralogues=False)
+                               skip_paralogues=True, delimiter=delimiter)
     align_seqs(orthologue_dir, alignments_dir, '.faa', cpus)
     # number_of_taxa = set(taxa_by_orf_id.values())
     concatenate_alignments(alignments_dir, '.faa', delimiter, min_frequency)

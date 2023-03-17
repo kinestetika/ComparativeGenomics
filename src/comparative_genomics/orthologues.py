@@ -9,7 +9,7 @@ from multiprocessing import cpu_count
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.9"
+VERSION = "0.10"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -303,6 +303,7 @@ def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa'
 def main():
     print(f'This is orthologues.py {VERSION}')
     args = parse_arguments()
+    Path(args.output_dir).mkdir(exist_ok=True)
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
         compute_orthologues(Path(args.input_dir), int(args.cpus), args.file_extension, args.delimiter,
                             int(args.minimum_representation))

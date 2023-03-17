@@ -9,7 +9,7 @@ from multiprocessing import cpu_count
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.7"
+VERSION = "0.8"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -210,8 +210,7 @@ def make_orthologue_from_cluster(cluster:Cluster, taxa_by_orf_id: list, unique_b
 
 
 def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list, unique_blast_results: dict,
-                                         minimum_representation) \
-        -> list[SetOfOrthologues]:
+                                         minimum_representation) -> list[SetOfOrthologues]:
     if cluster.is_done:
         return []
     cluster.is_done = True
@@ -231,7 +230,7 @@ def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list,
     if best_child_score > score:
         log('...moving on to children.')
         for child_cluster in sorted(cluster.children, key=len, reverse=True):
-            orthologues.extend(make_orthologues_from_cluster_family(child_cluster, taxa_by_orf_id, unique_blast_results))
+            orthologues.extend(make_orthologues_from_cluster_family(child_cluster, taxa_by_orf_id, unique_blast_results, minimum_representation))
     else:
         new_set = make_orthologue_from_cluster(cluster, taxa_by_orf_id, unique_blast_results)
         if len(new_set.orthologues) >= minimum_representation:

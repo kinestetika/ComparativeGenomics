@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.9"
+VERSION = "0.10"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -103,6 +103,10 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
             elif line.startswith('LENG'):
                 hmm_lengths[name] = int(line[4:].strip())
     log(f'HMM database has {len(hmm_lengths)} HMM profiles.')
+
+    if not fasta_dir.glob(f'*{file_extension}'):
+        log(f'No files with extension {file_extension} in dir {fasta_dir}, aborting!')
+        exit(1)
 
     with futures.ProcessPoolExecutor(max_workers=cpus) as executor:
         future_obj = {}

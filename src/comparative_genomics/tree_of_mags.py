@@ -320,8 +320,8 @@ def main():
     concatenate_alignments(alignments_dir, '.faa', delimiter, min_frequency)
     log('Done!')
     log('After running this script, you can for example use:')
-    log('raxmlHPC-PTHREADS -s concatenated-alignment -n tree -m PROTGAMMALG -f a -p 13 -x 123 -# 100 -T 20')
-
+    log('raxmlHPC-PTHREADS -s alignments/concatenated_alignment -n tree -m PROTGAMMALG -f a -p 13 -x 123 -# 100 -T 20')
+    log('iqtree2 -T 6 -m TEST -s alignments/concatenated_alignment -B 1000 -alrt 1000 --keep-ident')
 
 if __name__ == "__main__":
     main()

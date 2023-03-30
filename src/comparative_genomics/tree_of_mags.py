@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.10"
+VERSION = "0.12"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -50,13 +50,16 @@ def parse_arguments():
     parser.add_argument('--cpus', default=cpu_count(), help='How many cpus/threads to use (default: all = 0).')
     parser.add_argument('--file_extension', default='.faa', help='extension of aminoacid fasta files (default ".faa")')
     parser.add_argument('--delimiter', default='|', help='character to separate filenames and orfnames during '
-                                                         'orthologue calling')
+                                                         'orthologue calling, default |')
     parser.add_argument('--predict_orfs_to_dir', default='', help='predict orfs and store in dir')
-    parser.add_argument('--min_frequency', default=0.6, help='The minimum fraction of genes a taxon should have to be'
-                                                             ' included in the final multiple sequence alignment '
-                                                             '(default 0)')
-    parser.add_argument('--minimum_representation', default=3, help='Minimum # of taxa represented to include a gene'
-                                                                     'in the final alignment output (default 3).')
+    parser.add_argument('--min_frequency', default=0, help='The minimum fraction of genes a taxon should have to be'
+                                                           ' included in the final multiple sequence alignment '
+                                                           '(default 0)')
+    parser.add_argument('--minimum_representation', default=0, help='Minimum # of taxa represented to include a gene'
+                                                                    'in the final alignment output (default 0).')
+    parser.add_argument('--keep_identical', default=False, action='store_true', help='Whether identical sequences are'
+                                                                                     'included in the final concatenated '
+                                                                                     'alignment (default: False)')
     return parser.parse_args()
 
 
@@ -215,7 +218,8 @@ def align_seqs(src_dir: Path, dest_dir: Path, file_extension, cpus: int):
             ff.result()
 
 
-def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, min_frequency = 0):
+def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, min_frequency: float = 0.0,
+                           keep_identical=False):
     log(f'Now concatenating alignments in {src_dir}...')
     alignments = []
     unique_taxa = set()
@@ -278,7 +282,8 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
                 dupl_id = seqs_done[a['seq']]
                 log(f'skipping {taxon} - identical to {dupl_id}.')
             except KeyError:
-                seqs_done[a['seq']] = a['id']
+                if not keep_identical:
+                    seqs_done[a['seq']] = a['id']
                 write_fasta(writer, a)
 
 
@@ -292,7 +297,7 @@ def main():
     file_extension = args.file_extension
     delimiter = args.delimiter
     minimum_representation = int(args.minimum_representation)
-    min_frequency = args.min_frequency
+    min_frequency = float(args.min_frequency)
     os.environ["PATH"] += ':/bio/bin:/bio/bin/hmmer3/bin'
 
     if args.predict_orfs_to_dir:
@@ -317,11 +322,11 @@ def main():
                                skip_paralogues=True, delimiter=delimiter)
     align_seqs(orthologue_dir, alignments_dir, '.faa', cpus)
     # number_of_taxa = set(taxa_by_orf_id.values())
-    concatenate_alignments(alignments_dir, '.faa', delimiter, min_frequency)
+    concatenate_alignments(alignments_dir, '.faa', delimiter, min_frequency, keep_identical=args.keep_identical)
     log('Done!')
     log('After running this script, you can for example use:')
     log('raxmlHPC-PTHREADS -s alignments/concatenated_alignment -n tree -m PROTGAMMALG -f a -p 13 -x 123 -# 100 -T 20')
-    log('iqtree2 -T 6 -m TEST -s alignments/concatenated_alignment -B 1000 -alrt 1000 --keep-ident')
+    log('iqtree2 -T 20 -m TEST -s alignments/concatenated_alignment -B 1000 -alrt 1000 --keep-ident')
 
 if __name__ == "__main__":
     main()

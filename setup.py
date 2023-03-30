@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name='comparative_genomics',
-    version='0.10',
+    version='0.12',
     packages=setuptools.find_packages(where='src'),
     url='https://github.com/kinestetika/comparative_genomics',
     license='MIT',

@@ -9,7 +9,7 @@ from multiprocessing import cpu_count
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.10"
+VERSION = "0.12"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -293,6 +293,9 @@ def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa'
     log(f'Orthologue calling complete; created {len(orthologues)} set(s) of orthologous genes')
     orthologues_by_orf_id = {}
     for i in range(len(orthologues)):
+        if len(orthologues[i].orthologues) < max(2, minimum_representation):
+            log(f'Skipping orthologue {i}, too little representation')
+            continue
         for orf_id in orthologues[i].orthologues:
             orthologues_by_orf_id[orf_id] = f'O{i}'
         for orf_id in orthologues[i].paralogues:

@@ -157,18 +157,18 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
 
 
 def filter_orthologues(taxa_by_orf_id: list, orthologues: list[SetOfOrthologues], orthologues_by_orf_id: dict,
-                       min_frequency: float, fasta_dir: Path, file_extension: str):
+                       min_frequency: float, minimum_representation:int, fasta_dir: Path, file_extension: str):
     unique_taxa = set(taxa_by_orf_id)
     log(f'Now filtering {len(orthologues)} orthologues for representation of and among {len(unique_taxa)} taxa.')
     remaining_orthologues = {}
     removed_orthologues = set()
     for i in range(len(orthologues)):
         o = orthologues[i]
-        if len(o.orthologues) >= min_frequency * len(unique_taxa):
+        if len(o.orthologues) >= minimum_representation:
             remaining_orthologues[i] = o
         else:
             removed_orthologues.add(i)
-    log(f'Keeping {len(remaining_orthologues)}/{len(orthologues)} orthologues with >= {int(min_frequency * len(unique_taxa))} taxa.')
+    log(f'Keeping {len(remaining_orthologues)}/{len(orthologues)} orthologues with >= {minimum_representation} taxa.')
 
     remaining_taxa = []
     removed_taxa = set()

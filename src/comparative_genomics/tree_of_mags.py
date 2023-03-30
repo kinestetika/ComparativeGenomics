@@ -12,7 +12,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.12"
+VERSION = "0.13"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -317,7 +317,8 @@ def main():
     collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter, cpus)
     merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
         compute_orthologues(genes_dir, cpus, file_extension, delimiter, minimum_representation)
-    filter_orthologues(taxa_by_orf_id, orthologues, orthologues_by_orf_id, min_frequency, genes_dir, file_extension)
+    filter_orthologues(taxa_by_orf_id, orthologues, orthologues_by_orf_id, min_frequency, minimum_representation,
+                       genes_dir, file_extension)
     write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id, orthologue_dir,
                                skip_paralogues=True, delimiter=delimiter)
     align_seqs(orthologue_dir, alignments_dir, '.faa', cpus)

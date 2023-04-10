@@ -223,7 +223,6 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
     log(f'Now concatenating alignments in {src_dir}...')
     alignments = []
     unique_taxa = set()
-    file_extension = '.faa.raw'
     for file in sorted(src_dir.glob(f'*{file_extension}')):
         file = src_dir / file
         alignment = {}
@@ -278,6 +277,7 @@ def concatenate_alignments(src_dir: Path, file_extension: str, delimiter: str, m
     with open(src_dir / 'concatenated_alignment', 'w') as writer:
         for taxon in unique_taxa:
             a = concatenated_alignment[taxon]
+            a['id'] = a['id'].replace('.faa.hmm-results', '')
             try:
                 dupl_id = seqs_done[a['seq']]
                 log(f'skipping {taxon} - identical to {dupl_id}.')

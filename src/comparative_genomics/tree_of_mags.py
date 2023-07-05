@@ -201,7 +201,7 @@ def filter_orthologues(taxa_by_orf_id: list, orthologues: list[SetOfOrthologues]
 
 def run_align_programs(src_file: Path, raw_result_file: Path, final_result_file: Path, cpus: int):
     run_external(f'clustalo -i {src_file} -o {raw_result_file} -t Protein --threads={cpus}')
-    run_external(f'java -jar /bio/bin/BMGE/src/BMGE.jar -i {raw_result_file} -t AA -o {final_result_file}')
+    run_external(f'BMGE -i {raw_result_file} -t AA -o {final_result_file}')
 
 
 def align_seqs(src_dir: Path, dest_dir: Path, file_extension, cpus: int):

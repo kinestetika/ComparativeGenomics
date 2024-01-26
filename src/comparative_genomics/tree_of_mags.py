@@ -9,10 +9,10 @@ from concurrent import futures
 
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
-from comparative_genomics.orthologues import compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
+from comparative_genomics.orthologues_v2 import merge_and_code_fasta_input, compute_orthologues, write_orthologues_to_fasta, SetOfOrthologues
 
 
-VERSION = "0.13"
+VERSION = "0.14"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -52,11 +52,12 @@ def parse_arguments():
     parser.add_argument('--delimiter', default='|', help='character to separate filenames and orfnames during '
                                                          'orthologue calling, default |')
     parser.add_argument('--predict_orfs_to_dir', default='', help='predict orfs and store in dir')
-    parser.add_argument('--min_frequency', default=0, help='The minimum fraction of genes a taxon should have to be'
-                                                           ' included in the final multiple sequence alignment '
-                                                           '(default 0)')
-    parser.add_argument('--minimum_representation', default=0, help='Minimum # of taxa represented to include a gene'
-                                                                    'in the final alignment output (default 0).')
+    parser.add_argument('--min_fraction_of_genes_to_keep_taxon', default=0.5,
+                        help='The minimum fraction of genes a taxon should have to be included in the final multiple '
+                             'sequence alignment (default 0.5)')
+    parser.add_argument('--minimum_fraction_of_taxa_represented_per_gene', default=0.5,
+                        help='Minimum fraction of taxa represented to include a gene in the final alignment output '
+                             '(default 0.5).')
     parser.add_argument('--keep_identical', default=False, action='store_true', help='Whether identical sequences are'
                                                                                      'included in the final concatenated '
                                                                                      'alignment (default: False)')
@@ -200,7 +201,7 @@ def filter_orthologues(taxa_by_orf_id: list, orthologues: list[SetOfOrthologues]
 
 
 def run_align_programs(src_file: Path, raw_result_file: Path, final_result_file: Path, cpus: int):
-    run_external(f'clustalo -i {src_file} -o {raw_result_file} -t Protein --threads={cpus}')
+    run_external(f'clustalo -i {src_file} -o {raw_result_file} -t Protein --threads={cpus} --force')
     run_external(f'BMGE -i {raw_result_file} -t AA -o {final_result_file}')
 
 
@@ -296,8 +297,8 @@ def main():
     fasta_aa_dir = Path(args.predict_orfs_to_dir)
     file_extension = args.file_extension
     delimiter = args.delimiter
-    minimum_representation = int(args.minimum_representation)
-    min_frequency = float(args.min_frequency)
+    minimum_representation = float(args.minimum_fraction_of_taxa_represented_per_gene)
+    min_frequency = float(args.min_fraction_of_genes_to_keep_taxon)
     os.environ["PATH"] += ':/bio/bin:/bio/bin/hmmer3/bin'
 
     if args.predict_orfs_to_dir:
@@ -315,7 +316,7 @@ def main():
 
     hmm_file = prep_hmms(hmm_dir)
     collect_seqs(hmm_file, fasta_dir, genes_dir, file_extension, delimiter, cpus)
-    merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
+    taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
         compute_orthologues(genes_dir, cpus, file_extension, delimiter, minimum_representation)
     filter_orthologues(taxa_by_orf_id, orthologues, orthologues_by_orf_id, min_frequency, minimum_representation,
                        genes_dir, file_extension)

@@ -2,6 +2,7 @@ import argparse
 import subprocess
 import time
 from pathlib import Path
+from collections import Counter
 
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
@@ -9,6 +10,7 @@ from comparative_genomics.blast import TabularBlastParser
 VERSION = "0.14"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='orthologues.py. (C) Marc Strous, 2024')
@@ -22,6 +24,8 @@ def parse_arguments():
     parser.add_argument('--tmp_dir', default='tmp', help='This dir will be used to store intermediate files (default: tmp)')
     parser.add_argument('--fasta_output_dir', help='This script will write a fasta file for each cluster of homologous proteins '
                                                    'to this dir.')
+    parser.add_argument('--alignment_dir', default='', help='Align cluster-fasta files with famsa and prune with BMGE in this dir '
+                                                            '(default: do not align clustered seqs.')
     parser.add_argument('--min_fraction_id', default=0.5, help='Minimum fraction id during clustering by mmseqs (default: 0.5)')
     parser.add_argument('--min_fraction_overlap', default=0.8, help='Minimum coverage during clustering by mmseqs (default: 0.8)')
     parser.add_argument('--min_fraction_orthologues', default=0.5, help='Minimum fraction of proteins in a cluster that should '
@@ -30,8 +34,11 @@ def parse_arguments():
                                                                                 'represented in a cluster (default: 0.1)')
     parser.add_argument('--min_taxa_represented', default=0.5, help='Minimum # of taxa that should be represented in a cluster '
                                                                     '(default: 3)')
-    parser.add_argument('--include_paralogues_in_fasta_output', default=True,  action="store_false",
+    parser.add_argument('--min_fraction_of_genes_per_taxon', default=0.5, help='Reject taxa that are not represented in a '
+                                                                              'minimum fraction of proteins.')
+    parser.add_argument('--include_paralogues_in_fasta_output', default=True, action="store_false",
                         help='Whether to include paralogues in the output cluster fasta files (default: True).')
+    parser.add_argument('--concatenate', default=False, action="store_true", help='Concatenate aligned cluster-fasta files.')
     return parser.parse_args()
 
 
@@ -71,7 +78,7 @@ def merge_and_code_fasta_input(mag_faa_dir: Path, mag_faa_file_extension: str, d
         orf_count = 0
         for file in sorted(mag_faa_dir.glob(f'*{mag_faa_file_extension}')):
             fasta_file = mag_faa_dir / file.name
-            with FastaParser(fasta_file) as fasta_reader:
+            with FastaParser(fasta_file, cleanup_seq=False) as fasta_reader:
                 for orf in fasta_reader:
                     if orf['id'] in unique_ids:
                         log(f'warning: duplicate id for {orf["id"]} in {file.name}: skipping.')
@@ -116,7 +123,7 @@ class Cluster:
 
 
 class MMSeqsClusterParser:
-    # This class parses a *_cluster.tsv file created by "mmseqs easy-cluster ..."
+    # This class parses a *_cluster.tsv file created by "mmseqs ..."
     def __init__(self, path, taxa_by_orf_id: list, blast_scores: dict):
         self.path = path
         self.handle = None
@@ -147,7 +154,8 @@ class MMSeqsClusterParser:
 def cluster(taxa_by_orf_id: list, input_fasta_file:Path, tmp_dir: Path, fasta_output_dir: Path,
             fraction_id:float=0.5, fraction_overlap:float=0.8,
             min_fraction_orthologues:float=0.5, min_fraction_of_taxa_represented:float=0.1,
-            min_taxa_represented:float=3, include_paralogues_in_fasta_output=True):
+            min_taxa_represented:float=3, min_fraction_of_genes_per_taxon:float=0.1,
+            include_paralogues_in_fasta_output=True):
     unique_taxa = {taxon for taxon in taxa_by_orf_id}
     log(f'Detected {len(unique_taxa)} unique taxa.')
     # prep files
@@ -179,6 +187,7 @@ def cluster(taxa_by_orf_id: list, input_fasta_file:Path, tmp_dir: Path, fasta_ou
     error_count = 0
     cluster_count = 0
     percent_id = 0
+    taxon_representaton = Counter()
     with MMSeqsClusterParser(cluster_file_tsv, taxa_by_orf_id, blast_scores) as reader:
         for cluster in reader:
             if cluster.fraction_orthologues < min_fraction_orthologues \
@@ -195,9 +204,16 @@ def cluster(taxa_by_orf_id: list, input_fasta_file:Path, tmp_dir: Path, fasta_ou
                 percent_id += cluster.fraction_id
                 for seq_id in cluster.seq_ids:
                     seq_id2cluster[seq_id] = cluster
+                taxon_representaton.update(cluster.taxa)
+
     log(f'{len(seq_id2cluster)}/{len(taxa_by_orf_id)} seqs clustered ({len(seq_id2cluster)/len(taxa_by_orf_id):.1%}).')
     log(f'Accepted {cluster_count} clusters, rejected {rejected_cluster_count}, {error_count} due to errors.')
     log(f'Estimated average percent id: {percent_id/cluster_count:.1%}')
+    # filter out taxa with poor representaton
+    poorly_represented_taxa = {t for t in unique_taxa if taxon_representaton[t] < min_fraction_of_genes_per_taxon * cluster_count}
+    for t in poorly_represented_taxa:
+        log(f'Rejected taxon {t}; represented in only {taxon_representaton[t]/cluster_count:.1%} of clusters.')
+
     # write output
     fasta_output_dir.mkdir(exist_ok=True)
     rejected_fasta_output_dir = fasta_output_dir / 'rejected'
@@ -208,8 +224,10 @@ def cluster(taxa_by_orf_id: list, input_fasta_file:Path, tmp_dir: Path, fasta_ou
     for file in fasta_output_dir.glob('*'):
         if not file.is_dir():
             file.unlink()
-    with FastaParser(input_fasta_file) as fasta_reader:
+    with FastaParser(input_fasta_file, cleanup_seq=False) as fasta_reader:
         for orf in fasta_reader:
+            if taxa_by_orf_id[int(orf['id'])] in poorly_represented_taxa:
+                continue
             if int(orf['id']) in seq_id2cluster.keys():
                 cluster = seq_id2cluster[int(orf['id'])]
                 target_fasta_file = fasta_output_dir / f'{cluster.id}.faa'
@@ -231,6 +249,74 @@ def cluster(taxa_by_orf_id: list, input_fasta_file:Path, tmp_dir: Path, fasta_ou
                     write_fasta(writer, orf)
 
 
+def align(fasta_output_dir: Path, align_dir: Path):
+    if align_dir.exists():
+        for file in align_dir.glob('*'):
+            file.unlink()
+    align_dir.mkdir(exist_ok=True)
+    for fasta_file in fasta_output_dir.glob('*.faa'):
+        raw_aligned_file = align_dir / (fasta_file.stem + '.aln.raw')
+        run_external(f'famsa -i {fasta_file} -o {raw_aligned_file}')
+        final_aligned_file = align_dir / (fasta_file.stem + '.aln.faa')
+        run_external(f'BMGE -i {raw_aligned_file} -t AA -o {final_aligned_file}')
+
+
+def concatenate_alignments(align_dir: Path, delimiter: str):
+    log(f'Now concatenating alignments in {align_dir}...')
+    alignments = []
+    unique_taxa = set()
+    for file in sorted(align_dir.glob('*.faa')):
+        alignment = {}
+        length = 0
+        with FastaParser(file, cleanup_seq=False) as fasta_reader:
+            for orf in fasta_reader:
+                taxon, orf_id = orf['id'].split(delimiter)
+                try:
+                    taxon_dot_index = taxon.index('.')
+                    taxon = taxon[:taxon_dot_index]  # we remove the file extenson from the taxon name
+                except:
+                    pass
+                alignment[taxon] = orf
+                unique_taxa.add(taxon)
+                if length:
+                    if len(orf['seq']) != length:
+                        raise Exception(f'Unequal alignment length in file {file}')
+                else:
+                    length = len(orf['seq'])
+            alignments.append(alignment)
+    log(f'Parsed {len(alignments)} alignments from fasta files with {len(unique_taxa)} taxa.')
+
+    concatenated_alignment = {}
+    for taxon in unique_taxa:
+        concatenated_fasta_seq = {'id': taxon, 'seq': ''}
+        count = 0
+        for alignment in alignments:
+            length = 0
+            for t, s in alignment.items():
+                length = len(s['seq'])
+                break
+            try:
+                concatenated_fasta_seq['seq'] += alignment[taxon]['seq']
+                count += 1
+            except KeyError:
+                concatenated_fasta_seq['seq'] += '-' * length
+        if not concatenated_alignment:
+            concatenated_alignment_length = len(concatenated_fasta_seq["seq"])
+            log(f'Concatenated alignment has {concatenated_alignment_length} positions.')
+        concatenated_alignment[taxon] = concatenated_fasta_seq
+
+    seqs_done = {}
+    with open(align_dir / 'concatenated_alignment', 'w') as writer:
+        for taxon in unique_taxa:
+            a = concatenated_alignment[taxon]
+            try:
+                dupl_id = seqs_done[a['seq']]
+                log(f'skipping {taxon} - identical to {dupl_id}.')
+            except KeyError:
+                seqs_done[a['seq']] = a['id']
+                write_fasta(writer, a)
+
+
 def main():
     print(f'This is orthologues_v2.py {VERSION}')
     args = parse_arguments()
@@ -248,12 +334,18 @@ def main():
             min_fraction_orthologues = float(args.min_fraction_orthologues),
             min_fraction_of_taxa_represented = float(args.min_fraction_of_taxa_represented),
             min_taxa_represented = int(args.min_taxa_represented),
+            min_fraction_of_genes_per_taxon = float(args.min_fraction_of_genes_per_taxon),
             include_paralogues_in_fasta_output = bool(args.include_paralogues_in_fasta_output),
             taxa_by_orf_id = taxa_by_orf_id,
             input_fasta_file = merged_fasta_file,
             tmp_dir = Path(args.tmp_dir),
             fasta_output_dir=Path(args.fasta_output_dir),
             )
+
+    if args.alignment_dir:
+        align(Path(args.fasta_output_dir), Path(args.alignment_dir))
+        if args.concatenate:
+            concatenate_alignments(Path(args.alignment_dir), args.delimiter)
 
 
 if __name__ == "__main__":

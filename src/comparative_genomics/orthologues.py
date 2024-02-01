@@ -1,17 +1,45 @@
 import argparse
 import subprocess
 import time
-from tqdm import tqdm
 from pathlib import Path
-from math import log10
-from multiprocessing import cpu_count
+from collections import Counter
 
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.14"
+VERSION = "0.15"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='orthologues_old.py. (C) Marc Strous, 2024')
+    parser.add_argument('--mag_faa_dir', help='Dir with aminoacid fasta files, one for each genome or mag.')
+    parser.add_argument('--mag_faa_file_extension', default='.faa', help='Extension of genome aminoacid fasta files (default ".faa")')
+    parser.add_argument('--delimiter', default='~', help='This script will create a fasta file for each cluster of homologuous'
+                                                         'proteins. In those files, sequence ids will consist of a file name and'
+                                                         'the previous sequence id, separated with the delimiter (default(~)')
+    parser.add_argument('--cluster_dir', default='clustering', help='This dir will be used to store intermediate files that '
+                                                                    'could potentially be useful (default: clustering).')
+    parser.add_argument('--tmp_dir', default='tmp', help='This dir will be used to store intermediate files (default: tmp)')
+    parser.add_argument('--fasta_output_dir', help='This script will write a fasta file for each cluster of homologous proteins '
+                                                   'to this dir.')
+    parser.add_argument('--alignment_dir', default='', help='Align cluster-fasta files with famsa and prune with BMGE in this dir '
+                                                            '(default: do not align clustered seqs.')
+    parser.add_argument('--min_fraction_id', default=0.5, help='Minimum fraction id during clustering by mmseqs (default: 0.5)')
+    parser.add_argument('--min_fraction_overlap', default=0.8, help='Minimum coverage during clustering by mmseqs (default: 0.8)')
+    parser.add_argument('--min_fraction_orthologues', default=0.5, help='Minimum fraction of proteins in a cluster that should '
+                                                                        'be orthologues (default: 0.5)')
+    parser.add_argument('--min_fraction_of_taxa_represented', default=0.1, help='Minimum fraction of total taxa that should be '
+                                                                                'represented in a cluster (default: 0.1)')
+    parser.add_argument('--min_taxa_represented', default=3, help='Minimum # of taxa that should be represented in a cluster '
+                                                                    '(default: 3)')
+    parser.add_argument('--min_fraction_of_genes_per_taxon', default=0.0, help='Reject taxa that are not represented in a '
+                                                                              'minimum fraction of proteins.')
+    parser.add_argument('--include_paralogues_in_fasta_output', default=True, action="store_false",
+                        help='Whether to include paralogues in the output cluster fasta files (default: True).')
+    parser.add_argument('--concatenate', default=False, action="store_true", help='Concatenate aligned cluster-fasta files.')
+    return parser.parse_args()
 
 
 def log(log_message, values=()):
@@ -41,61 +69,23 @@ def run_external(exec, stdin=None, stdout=subprocess.DEVNULL, stderr=subprocess.
         raise Exception(f'Error while trying to run "{exec}"')
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(description='orthologues.py. (C) Marc Strous, 2022')
-    parser.add_argument('--input_dir', help='Dir with aminoacid fasta files, one for each genome or mag.')
-    parser.add_argument('--output_dir', help='Dir to write output to')
-    parser.add_argument('--cpus', default=cpu_count(), help='How many cpus/threads to use (default: all).')
-    parser.add_argument('--file_extension', default='.faa', help='Extension of aminoacid fasta files (default ".faa")')
-    parser.add_argument('--delimiter', default='|', help='Character to separate filenames and orfnames in output')
-    parser.add_argument('--skip_paralogues', default=False,  action="store_true",
-                        help='Do not write paralogues to output fasta file (default: False).')
-    parser.add_argument('--minimum_representation', default=3,  help='Minimum # of taxa represented to write a set of'
-                                                                     'orthologues to fasta in the final output (default 3).')
-
-
-
-    return parser.parse_args()
-
-
-class Cluster:
-    def __init__(self, parent = None):
-        self.parent = parent
-        self.children = set()
-        self.members = []
-        self.is_done = False
-
-    def __len__(self):
-        return len(self.members)
-
-
-class SetOfOrthologues:
-    def __init__(self):
-        self.orthologues = []
-        self.paralogues = []
-
-def make_blast_key(id1: int, id2: int) -> str:
-    if id1 > id2:
-        return f'{id2} {id1}'
-    else:
-        return f'{id1} {id2}'
-
-
-def merge_and_code_fasta_input(fasta_dir: Path, file_extension: str, delimiter: str, taxa_by_orf_id: list) -> Path:
-    merged_fasta_file = fasta_dir / 'merged_and_coded_fasta'
+def merge_and_code_fasta_input(mag_faa_dir: Path, mag_faa_file_extension: str, delimiter: str, taxa_by_orf_id: list,
+                               merged_fasta_file: Path):
     log(f'Now merging and coding fasta input as {merged_fasta_file}..')
     unique_ids = set()
     with open(merged_fasta_file, 'w') as writer:
         file_count = 0
         orf_count = 0
-        for file in sorted(fasta_dir.glob(f'*{file_extension}')):
-            fasta_file = fasta_dir / file.name
-            with FastaParser(fasta_file) as fasta_reader:
+        for file in sorted(mag_faa_dir.glob(f'*{mag_faa_file_extension}')):
+            fasta_file = mag_faa_dir / file.name
+            with FastaParser(fasta_file, cleanup_seq=False) as fasta_reader:
                 for orf in fasta_reader:
                     if orf['id'] in unique_ids:
                         log(f'warning: duplicate id for {orf["id"]} in {file.name}: skipping.')
                         continue
                     unique_ids.add(orf['id'])
+                    if orf['seq'][-1] == '*':
+                        orf['seq'] = orf['seq'][:-1]
                     recoded_orf = {'id': f'{orf_count}',
                                    'seq': orf['seq'],
                                    'descr': f'{file.stem}{delimiter}{orf["id"]} {orf["descr"]}'.strip()
@@ -106,212 +96,262 @@ def merge_and_code_fasta_input(fasta_dir: Path, file_extension: str, delimiter: 
             file_count += 1
     log(f'Merging and coding fasta input complete; recoded and wrote {len(taxa_by_orf_id)} proteins to fasta, '
         f'{file_count} unique taxa.')
-    return merged_fasta_file
 
 
-def run_diamond(fasta_file: Path, cpus: int, unique_blast_results: dict) -> Path:
-    diamond_result_file = fasta_file.parent / 'diamond_results'
-    log(f'Now computing homology between genes with diamond... (results at {diamond_result_file})')
-    if not diamond_result_file.exists() or not diamond_result_file.stat().st_size:
-        run_external(f'diamond makedb --in {fasta_file} --db {fasta_file}')
-        run_external(f'diamond blastp -d {fasta_file} -q {fasta_file} -o {diamond_result_file} -f 6 '
-                             f'--threads {cpus} --fast --max-target-seqs 200')
-    mcl_cluster_input_file = fasta_file.parent / 'mcl_input'
-    #if not mcl_cluster_input_file.exists() or not mcl_cluster_input_file.stat().st_size:
-    with TabularBlastParser(diamond_result_file, 'BLAST') as handle:
-        with open(mcl_cluster_input_file, 'w') as writer:
-            for blast_result in handle:
-                for hit in blast_result:
-                    hit.hit = int(hit.hit)
-                    hit.query = int(hit.query)
-                    if hit.hit == hit.query:
-                        continue
-                    unique_blast_results[make_blast_key(hit.hit, hit.query)] = hit.score
-                    writer.write(f'{hit.hit}\t{hit.query}\t{min(200, round(-log10(max(hit.evalue, 1e-100))))}\n')
-    log(f'Homology computation complete; wrote {len(unique_blast_results)} pairwise evalues '
-        f'to {mcl_cluster_input_file} for clustering..')
-    return mcl_cluster_input_file
+class Cluster:
+    def __init__(self, seq_ids: list, taxa_by_orf_id: list, blast_scores: dict):
+        self.id = seq_ids[0]
+        try:
+            self.seq_ids = sorted(seq_ids, key=lambda k: blast_scores[self.id][k][0], reverse=True)
+            self.fraction_id = sum([blast_scores[self.id][id2][1] for id2 in self.seq_ids[1:]]) / (len(self.seq_ids)-1)
+            self.error = False
+        except KeyError:
+            log('Warning: no alignment information for cluster - could not compute percentage id and orthologues '
+                  'could not be called for this cluster.')
+            self.error = True
+            self.seq_ids = seq_ids
+            self.fraction_id = 0
+        self.paralogues = {}
+        self.taxa = set()
+        for seq_id in self.seq_ids:
+            self.paralogues[seq_id] = taxa_by_orf_id[seq_id] in self.taxa
+            self.taxa.add(taxa_by_orf_id[seq_id])
+        self.fraction_orthologues = len(self.taxa) / len(self.seq_ids)
+        # print(f'cluster at {self.fraction_id:.1%}')
+        # for i in range(len(self.seq_ids)):
+        #    print(self.seq_ids[i], taxa_by_orf_id[self.seq_ids[i]], blast_scores[self.id][self.seq_ids[i]], self.paralogues[i])
 
 
-def run_mcl(graph_input_file: Path, output_file, fineness, cpus):
-    run_external(f'mcl {graph_input_file} --abc -I {fineness:.1f} -t {cpus} -o {output_file}')
+class MMSeqsClusterParser:
+    # This class parses a *_cluster.tsv file created by "mmseqs ..."
+    def __init__(self, path, taxa_by_orf_id: list, blast_scores: dict):
+        self.path = path
+        self.handle = None
+        self.taxa_by_orf_id = taxa_by_orf_id
+        self.blast_scores = blast_scores
+
+    def __enter__(self):
+        self.handle = open(self.path)
+        return self
+
+    def __exit__(self, exception_type, exception_value, exception_traceback):
+        self.handle.close()
+
+    def __iter__(self):
+        current_cluster_seq_id_list = []
+        while line := self.handle.readline():
+            id1, id2 = line.strip().split('\t')
+            if id1 == id2:
+                if len(current_cluster_seq_id_list) > 1:
+                    yield Cluster(current_cluster_seq_id_list, self.taxa_by_orf_id, self.blast_scores)
+                current_cluster_seq_id_list = [int(id1)]
+            elif len(current_cluster_seq_id_list):
+                current_cluster_seq_id_list.append(int(id2))
+        if len(current_cluster_seq_id_list) > 1:
+            yield Cluster(current_cluster_seq_id_list, self.taxa_by_orf_id, self.blast_scores)
 
 
-def mcl_cluster(mcl_cluster_input_file: Path, cpus, fineness_steps=None) -> list[Cluster]:
-    log('Now clustering homologous genes with mcl..')
-    clustering_data_by_orf = {}
-    all_clusters = []
-    if not fineness_steps:
-        fineness_steps = [1.2, 1.4, 2, 4, 6]
-    # use mcl to cluster data de novo at each fineness step
-    for fineness in range(len(fineness_steps)):
-        mcl_output_file = mcl_cluster_input_file.parent / f'mcl.{fineness_steps[fineness]}'
-        if not mcl_output_file.exists() or not mcl_output_file.stat().st_size:
-            run_mcl(mcl_cluster_input_file, mcl_output_file, fineness_steps[fineness], cpus)
-        with open(mcl_output_file) as reader:
-            for line in reader:
-                new_cluster = Cluster()
-                new_cluster.members = [int(id) for id in line.split('\t')]
-                for orf_id in new_cluster.members:
-                    try:
-                        prev_clustering_data_for_orf = clustering_data_by_orf[orf_id]
-                    except KeyError:
-                        prev_clustering_data_for_orf = {}
-                        clustering_data_by_orf[orf_id] = prev_clustering_data_for_orf
-                    prev_clustering_data_for_orf[fineness] = len(all_clusters)
-                all_clusters.append(new_cluster)
-    log('now creating cluster hierarchy...')
+def cluster(taxa_by_orf_id: list, input_fasta_file:Path, tmp_dir: Path, fasta_output_dir: Path,
+            fraction_id:float=0.5, fraction_overlap:float=0.8,
+            min_fraction_orthologues:float=0.5, min_fraction_of_taxa_represented:float=0.1,
+            min_taxa_represented:float=3, min_fraction_of_genes_per_taxon:float=0.1,
+            include_paralogues_in_fasta_output=True):
+    unique_taxa = {taxon for taxon in taxa_by_orf_id}
+    log(f'Detected {len(unique_taxa)} unique taxa.')
+    # prep files
+    tmp_dir.mkdir(exist_ok=True)
+    cluster_file_base = input_fasta_file.parent / f'{input_fasta_file.stem}.clustering'
+    cluster_file_tsv = input_fasta_file.parent / f'{input_fasta_file.stem}.clustering.tsv'
+    cluster_file_align = input_fasta_file.parent / f'{input_fasta_file.stem}.clustering.align'
+    cluster_file_blast = input_fasta_file.parent / f'{input_fasta_file.stem}.clustering.blast'
+    input_fasta_db = input_fasta_file.parent / (input_fasta_file.stem + '.mmseqdb')
+    mmseqs_path = '' # '/bio/bin/mmseqs/bin/'
+    # run programs
+    run_external(f'{mmseqs_path}mmseqs createdb {input_fasta_file} {input_fasta_db}')
+    run_external(f'{mmseqs_path}mmseqs cluster -c {fraction_overlap} --cov-mode 0 --min-seq-id {fraction_id} '
+                 f'{input_fasta_db} {cluster_file_base} {tmp_dir}')
+    run_external(f'{mmseqs_path}mmseqs createtsv {input_fasta_db} {input_fasta_db} {cluster_file_base} {cluster_file_tsv}')
+    run_external(f'{mmseqs_path}mmseqs align {input_fasta_db} {input_fasta_db} {cluster_file_base} '
+                 f'{cluster_file_align} -a')
+    run_external(f'{mmseqs_path}mmseqs convertalis {input_fasta_db} {input_fasta_db} {cluster_file_align} '
+                 f'{cluster_file_blast}')
+    # parse results
+    blast_scores = {}
+    with TabularBlastParser(cluster_file_blast, 'BLAST') as reader:
+        for r in reader:
+            if len(r.hits) > 1:
+                blast_scores[int(r.hits[0].query)] = {int(h.hit): (h.score, h.percent_id) for h in r.hits}
+    seq_id2cluster = {}
+    seq_id2cluster_rejected = {}
+    rejected_cluster_count = 0
+    error_count = 0
+    cluster_count = 0
+    percent_id = 0
+    taxon_representaton = Counter()
+    with MMSeqsClusterParser(cluster_file_tsv, taxa_by_orf_id, blast_scores) as reader:
+        for cluster in reader:
+            if cluster.fraction_orthologues < min_fraction_orthologues \
+                    or len(cluster.taxa) < max(min_taxa_represented, min_fraction_of_taxa_represented * len(unique_taxa))\
+                    or cluster.error:
+                rejected_cluster_count += 1
+                error_count += cluster.error
+                for seq_id in cluster.seq_ids:
+                    seq_id2cluster_rejected[seq_id] = cluster
+                cluster.id = f'rejected_{rejected_cluster_count}'
+            else:
+                cluster.id = cluster_count
+                cluster_count += 1
+                percent_id += cluster.fraction_id
+                for seq_id in cluster.seq_ids:
+                    seq_id2cluster[seq_id] = cluster
+                taxon_representaton.update(cluster.taxa)
 
-    for orf_id in clustering_data_by_orf:
-        parent_cluster = None
-        for cluster_id in clustering_data_by_orf[orf_id].values():
-            cluster_at_fineness = all_clusters[cluster_id]
-            if parent_cluster:
-                parent_cluster.children.add(cluster_at_fineness)
-                cluster_at_fineness.parent = parent_cluster
-            parent_cluster = cluster_at_fineness
-    log(f'Cluster generation complete; created {sum((1 for c in all_clusters if c.parent == None))} root clusters')
-    return all_clusters
+    log(f'{len(seq_id2cluster)}/{len(taxa_by_orf_id)} seqs clustered ({len(seq_id2cluster)/len(taxa_by_orf_id):.1%}).')
+    log(f'Accepted {cluster_count} clusters, rejected {rejected_cluster_count}, {error_count} due to errors.')
+    log(f'Estimated average percent id: {percent_id/cluster_count:.1%}')
+    # filter out taxa with poor representaton
+    poorly_represented_taxa = {t for t in unique_taxa if taxon_representaton[t] < min_fraction_of_genes_per_taxon * cluster_count}
+    for t in poorly_represented_taxa:
+        log(f'Rejected taxon {t}; represented in only {taxon_representaton[t]/cluster_count:.1%} of clusters.')
 
-
-def compute_cluster_score(cluster, taxa_by_orf_id) -> float:
-    taxa_collected = {taxa_by_orf_id[orf_id] for orf_id in cluster.members}
-    return 2 * len(taxa_collected) - len(cluster.members)
-
-
-def make_orthologue_from_cluster(cluster:Cluster, taxa_by_orf_id: list, unique_blast_results: dict)\
-        -> SetOfOrthologues:
-    is_root_cluster = 'ROOT' if not cluster.parent else ''
-    log(f'Creating orthologues from {is_root_cluster} cluster with {len(cluster)} members.''')
-    cluster.is_done = True
-    member_scores = {}
-    for orf_id in cluster.members:
-        s = 0.0
-        for orf_id_2 in cluster.members:
-            if orf_id == orf_id_2:
+    # write output
+    fasta_output_dir.mkdir(exist_ok=True)
+    rejected_fasta_output_dir = fasta_output_dir / 'rejected'
+    rejected_fasta_output_dir.mkdir(exist_ok=True)
+    for file in rejected_fasta_output_dir.glob('*'):
+        if not file.is_dir():
+            file.unlink()
+    for file in fasta_output_dir.glob('*'):
+        if not file.is_dir():
+            file.unlink()
+    i = 0
+    with FastaParser(input_fasta_file, cleanup_seq=False) as fasta_reader:
+        for orf in fasta_reader:
+            if taxa_by_orf_id[int(orf['id'])] in poorly_represented_taxa:
                 continue
-            bk = make_blast_key(orf_id, orf_id_2)
-            s += unique_blast_results.get(bk, 0)
-        member_scores[orf_id] = s
-
-    #members_scores = {orf_id: sum((unique_blast_results.get(make_blast_key(orf_id, orf_id_2), 0)
-    #                               for orf_id_2 in cluster.members)) for orf_id in cluster.members}
-    cluster.members.sort(key=lambda orf_id: member_scores[orf_id], reverse=True)
-    taxa_collected = set()
-    my_set = SetOfOrthologues()
-    for orf_id in cluster.members:
-        taxon = taxa_by_orf_id[orf_id]
-        if taxon in taxa_collected:
-            my_set.paralogues.append(orf_id)
-        else:
-            my_set.orthologues.append(orf_id)
-            taxa_collected.add(taxon)
-    return my_set
-
-
-def make_orthologues_from_cluster_family(cluster: Cluster, taxa_by_orf_id: list, unique_blast_results: dict,
-                                         minimum_representation) -> list[SetOfOrthologues]:
-    if cluster.is_done:
-        return []
-    cluster.is_done = True
-    if len(cluster) < 2:
-        return []
-    orthologues = []
-    score = compute_cluster_score(cluster, taxa_by_orf_id)
-    is_root_cluster = 'ROOT' if not cluster.parent else ''
-    log(f'Looking to create orthologues from {is_root_cluster} cluster with {len(cluster)} members and {len(cluster.children)} children. Score {score}')
-    best_child_score = 0
-    for child_cluster in sorted(cluster.children, key=len, reverse=True):
-        child_score = compute_cluster_score(child_cluster, taxa_by_orf_id)
-        if child_score > best_child_score:
-            best_child_score = child_score
-            best_child_cluster = child_cluster
-            log(f'  child has {len(child_cluster)} and score {child_score}')
-    if best_child_score > score:
-        log('...moving on to children.')
-        for child_cluster in sorted(cluster.children, key=len, reverse=True):
-            orthologues.extend(make_orthologues_from_cluster_family(child_cluster, taxa_by_orf_id, unique_blast_results, minimum_representation))
-    else:
-        new_set = make_orthologue_from_cluster(cluster, taxa_by_orf_id, unique_blast_results)
-        if len(new_set.orthologues) >= minimum_representation:
-            orthologues.append(new_set)
-    return orthologues
-
-
-def write_orthologues_to_fasta(merged_and_coded_fasta_file:Path, orthologues_by_orf_id: dict[int, str],
-                               taxa_by_orf_id: dict, output_dir: Path, delimiter: str, skip_paralogues: bool = False):
-    log('Now writing a fasta file for each set of orthologous genes...')
-    if not skip_paralogues:
-        H = {'O': '[Orthologue]', 'P' : '[Paralogue]'}
-    else:
-        H = {'O': '', 'P' : ''}
-    count = 1
-    with FastaParser(merged_and_coded_fasta_file) as fasta_reader:
-        for orf in tqdm(fasta_reader, total=len(taxa_by_orf_id)):
-            if result := orthologues_by_orf_id.get(int(orf['id']), 0):
-                if result.startswith('P') and skip_paralogues:
-                    continue
-                output_file = output_dir / f'{result[1:]}.faa'
-                try:
-                    space_index = orf['descr'].index(' ')
-                    orf_id = orf['descr'][0:space_index].split(delimiter)
-                except ValueError:  # This happens when the original orf had no description
+            if int(orf['id']) in seq_id2cluster.keys():
+                cluster = seq_id2cluster[int(orf['id'])]
+                target_fasta_file = fasta_output_dir / f'{cluster.id}.faa'
+            elif int(orf['id']) in seq_id2cluster_rejected.keys():
+                cluster = seq_id2cluster_rejected[int(orf['id'])]
+                target_fasta_file = rejected_fasta_output_dir / f'{cluster.id}.faa'
+            else:
+                continue
+            if include_paralogues_in_fasta_output or not cluster.paralogues[int(orf['id'])]:
+                paralogue_text = '(PARALOGUE)' if cluster.paralogues[int(orf['id'])] else ''
+                with open(target_fasta_file, 'a') as writer:
                     try:
-                        orf_id = orf['descr'].split(delimiter)
-                    except:
-                        print(f'Difficulty with orf descr: {orf["descr"]}')
-                except:
-                    print(f'Difficulty with orf descr: {orf["descr"]}')
-                orf_id = f'{orf_id[0]}{delimiter}{count}'
-                recoded_orf = {'id': orf_id,
-                               'seq': orf['seq'],
-                               'descr':  "{} {}".format(H[result[0:1]], orf['descr']).strip()
-                               }
-                with open(output_file, 'a') as writer:
-                    write_fasta(writer, recoded_orf)
-                count += 1
+                        descr_space_index = orf['descr'].index(' ')
+                        orf['id'] = orf['descr'][:descr_space_index]
+                        orf['descr'] = paralogue_text + orf['descr'][descr_space_index+1:]
+                    except ValueError:
+                        orf['id'] = orf['descr']
+                        orf['descr'] = paralogue_text
+                    write_fasta(writer, orf)
+                    i += 1
+    log(f'wrote {i} seqs to files in {fasta_output_dir}')
 
-def compute_orthologues(fasta_dir: Path, cpus: int, file_extension: str = '.faa', delimiter: str = '|',
-                        minimum_representation = 3) -> tuple:
-    # 'orthologues' is a list of 'SetOfOrthologues'. A 'SetOfOrthologues' contains 'paralogues' and 'orthologues'.
-    # These are both lists with 'orf ids' (int) in 'merged_and_coded_fasta_file'.
-    # 'orthologues_by_orf_id' is a dict of 'orf_ids' with values starting with 'O' or 'P' followed by the index of
-    # the 'SetOfOrthologues' in the 'orthologues' list.
-    # 'taxa_by_orf_id' is a list with 'orf_ids' (int) as indexes and with original file numbers (int) as values.
-    taxa_by_orf_id = []
-    unique_blast_results = {}
-    merged_and_coded_fasta_file = merge_and_code_fasta_input(fasta_dir, file_extension, delimiter, taxa_by_orf_id)
-    mcl_cluster_input_file = run_diamond(merged_and_coded_fasta_file, cpus, unique_blast_results)
-    clusters = mcl_cluster(mcl_cluster_input_file, cpus)
-    orthologues = []
-    log('Now calling orthologues from cluster families...')
-    for cluster in clusters:
-        if cluster.parent:
-            continue  # only take the "root" clusters, the kids will be processed by
-        orthologues.extend(make_orthologues_from_cluster_family(cluster, taxa_by_orf_id, unique_blast_results,
-                                                                minimum_representation))
-    log(f'Orthologue calling complete; created {len(orthologues)} set(s) of orthologous genes')
-    orthologues_by_orf_id = {}
-    for i in range(len(orthologues)):
-        if len(orthologues[i].orthologues) < max(2, minimum_representation):
-            log(f'Skipping orthologue {i}, too little representation')
-            continue
-        for orf_id in orthologues[i].orthologues:
-            orthologues_by_orf_id[orf_id] = f'O{i}'
-        for orf_id in orthologues[i].paralogues:
-            orthologues_by_orf_id[orf_id] = f'P{i}'
-    return merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id
+def align(fasta_output_dir: Path, align_dir: Path):
+    if align_dir.exists():
+        for file in align_dir.glob('*'):
+            file.unlink()
+    align_dir.mkdir(exist_ok=True)
+    for fasta_file in fasta_output_dir.glob('*.faa'):
+        raw_aligned_file = align_dir / (fasta_file.stem + '.aln.raw')
+        run_external(f'famsa {fasta_file} {raw_aligned_file}')
+        final_aligned_file = align_dir / (fasta_file.stem + '.aln.faa')
+        run_external(f'BMGE -i {raw_aligned_file} -t AA -o {final_aligned_file}')
+
+
+def concatenate_alignments(align_dir: Path, delimiter: str):
+    log(f'Now concatenating alignments in {align_dir}...')
+    alignments = []
+    unique_taxa = set()
+    for file in sorted(align_dir.glob('*.faa')):
+        alignment = {}
+        length = 0
+        with FastaParser(file, cleanup_seq=False) as fasta_reader:
+            for orf in fasta_reader:
+                taxon, orf_id = orf['id'].split(delimiter)
+                try:
+                    taxon_dot_index = taxon.index('.')
+                    taxon = taxon[:taxon_dot_index]  # we remove the file extenson from the taxon name
+                except:
+                    pass
+                alignment[taxon] = orf
+                unique_taxa.add(taxon)
+                if length:
+                    if len(orf['seq']) != length:
+                        raise Exception(f'Unequal alignment length in file {file}')
+                else:
+                    length = len(orf['seq'])
+            alignments.append(alignment)
+    log(f'Parsed {len(alignments)} alignments from fasta files with {len(unique_taxa)} taxa.')
+
+    concatenated_alignment = {}
+    for taxon in unique_taxa:
+        concatenated_fasta_seq = {'id': taxon, 'seq': ''}
+        count = 0
+        for alignment in alignments:
+            length = 0
+            for t, s in alignment.items():
+                length = len(s['seq'])
+                break
+            try:
+                concatenated_fasta_seq['seq'] += alignment[taxon]['seq']
+                count += 1
+            except KeyError:
+                concatenated_fasta_seq['seq'] += '-' * length
+        if not concatenated_alignment:
+            concatenated_alignment_length = len(concatenated_fasta_seq["seq"])
+            log(f'Concatenated alignment has {concatenated_alignment_length} positions.')
+        concatenated_alignment[taxon] = concatenated_fasta_seq
+
+    seqs_done = {}
+    with open(align_dir / 'concatenated_alignment', 'w') as writer:
+        for taxon in unique_taxa:
+            a = concatenated_alignment[taxon]
+            try:
+                dupl_id = seqs_done[a['seq']]
+                log(f'skipping {taxon} - identical to {dupl_id}.')
+            except KeyError:
+                seqs_done[a['seq']] = a['id']
+                write_fasta(writer, a)
 
 
 def main():
-    print(f'This is orthologues.py {VERSION}')
+    print(f'This is orthologues_v2.py {VERSION}')
     args = parse_arguments()
-    Path(args.output_dir).mkdir(exist_ok=True)
-    merged_and_coded_fasta_file, taxa_by_orf_id, unique_blast_results, orthologues, orthologues_by_orf_id = \
-        compute_orthologues(Path(args.input_dir), int(args.cpus), args.file_extension, args.delimiter,
-                            int(args.minimum_representation))
-    write_orthologues_to_fasta(merged_and_coded_fasta_file, orthologues_by_orf_id, taxa_by_orf_id,
-                               Path(args.output_dir), args.delimiter, args.skip_paralogues)
+    cluster_dir = Path(args.cluster_dir)
+    cluster_dir.mkdir(exist_ok=True)
+    for file in cluster_dir.glob('*'):
+        if not file.is_dir():
+            file.unlink()
+    merged_fasta_file = cluster_dir / 'merged_and_coded.fasta'
+    taxa_by_orf_id = []
+    merge_and_code_fasta_input(mag_faa_dir = Path(args.mag_faa_dir),
+                               mag_faa_file_extension = args.mag_faa_file_extension,
+                               delimiter = args.delimiter,
+                               taxa_by_orf_id = taxa_by_orf_id,
+                               merged_fasta_file = merged_fasta_file
+                               )
+    cluster(fraction_id = float(args.min_fraction_id),
+            fraction_overlap = float(args.min_fraction_overlap),
+            min_fraction_orthologues = float(args.min_fraction_orthologues),
+            min_fraction_of_taxa_represented = float(args.min_fraction_of_taxa_represented),
+            min_taxa_represented = int(args.min_taxa_represented),
+            min_fraction_of_genes_per_taxon = float(args.min_fraction_of_genes_per_taxon),
+            include_paralogues_in_fasta_output = bool(args.include_paralogues_in_fasta_output),
+            taxa_by_orf_id = taxa_by_orf_id,
+            input_fasta_file = merged_fasta_file,
+            tmp_dir = Path(args.tmp_dir),
+            fasta_output_dir=Path(args.fasta_output_dir),
+            )
+
+    if args.alignment_dir:
+        align(Path(args.fasta_output_dir), Path(args.alignment_dir))
+        if args.concatenate:
+            concatenate_alignments(Path(args.alignment_dir), args.delimiter)
 
 
 if __name__ == "__main__":

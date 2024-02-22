@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name='comparative_genomics',
-    version='0.15',
+    version='0.16',
     packages=setuptools.find_packages(where='src'),
     url='https://github.com/kinestetika/comparative_genomics',
     license='MIT',
@@ -26,7 +26,7 @@ setuptools.setup(
     package_dir={'': 'src'},
     package_data={'': ['gtdb-pfam.hmm', 'gtdb-tigr.hmm', 'ribosomal.pfam.hmm', 'ribosomal.tigr.hmm', 'rpoABC.hmm']},
     python_requires='>=3.10',
-    install_requires=[],
+    install_requires=['clipkit'],
     extras_require={  # Optional
         'dev': ['setuptools', 'build', 'twine'],
         'test': []

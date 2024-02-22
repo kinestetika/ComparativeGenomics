@@ -10,7 +10,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import merge_and_code_fasta_input, cluster, align, concatenate_alignments
 
 
-VERSION = "0.15"
+VERSION = "0.16"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -90,8 +90,9 @@ def predict_orfs(nt_dir: Path, aa_dir: Path, file_extension: str):
             shutil.move(nt_file, nt_file.parent / new_name)
             log(f'renamed "{nt_file.name}" to "{new_name}"')
             nt_file = nt_file.parent / new_name
-        if not (aa_dir / nt_file.name).exists():
-            run_external(f'prodigal -m -f gff -q -i {nt_file} -a {aa_dir / nt_file.name}')
+        result_file  =aa_dir / (nt_file.stem + ".faa")
+        if not result_file.exists():
+            run_external(f'prodigal -m -f gff -q -i {nt_file} -a {result_file}')
 
 
 def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extension, delimiter: str = ''):
@@ -126,27 +127,25 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                 if orf['id'] in unique_orf_ids:
                     raise Exception(f'Fasta seq ids should be unique within each file. Duplicate: {orf["id"]}')
                 unique_orf_ids.add(orf['id'])
-            if hmm_results_file.exists() and hmm_results_file.stat().st_size:
-                pass
-            else:
-                run_external(f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
-                if not gene_file.exists() or not gene_file.stat().st_size:
-                    orfs_already_done = set()
-                    with TabularBlastParser(file, 'HMMSCAN_DOM_TABLE') as handle:
-                        count = 0
-                        with open(gene_file, 'w') as writer:
-                            for blast_result in handle:
-                                for hit in blast_result:
-                                    if hit.aligned_length / hmm_lengths[hit.hit] < 0.7:
-                                        continue
-                                    if hit.query in orfs_already_done:
-                                        continue
-                                    orfs_already_done.add(hit.query)
-                                    orf = all_orfs[hit.query]
-                                    write_fasta(writer, orf)
-                                    count += 1
-                                    break
-                        log(f'{gene_file}: Wrote {count} seqs to fasta.')
+        if not hmm_results_file.exists() and hmm_results_file.stat().st_size:
+            run_external(f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
+        if not gene_file.exists() or not gene_file.stat().st_size:
+            orfs_already_done = set()
+            with TabularBlastParser(hmm_results_file, 'HMMSCAN_DOM_TABLE') as handle:
+                count = 0
+                with open(gene_file, 'w') as writer:
+                    for blast_result in handle:
+                        for hit in blast_result:
+                            if hit.aligned_length / hmm_lengths[hit.hit] < 0.7:
+                                continue
+                            if hit.query in orfs_already_done:
+                                continue
+                            orfs_already_done.add(hit.query)
+                            orf = all_orfs[hit.query]
+                            write_fasta(writer, orf)
+                            count += 1
+                            break
+                log(f'{gene_file}: Wrote {count} seqs to fasta.')
 
 
 def main():

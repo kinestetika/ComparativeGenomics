@@ -7,7 +7,7 @@ from collections import Counter
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.15"
+VERSION = "0.16"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -260,7 +260,7 @@ def align(fasta_output_dir: Path, align_dir: Path):
         raw_aligned_file = align_dir / (fasta_file.stem + '.aln.raw')
         run_external(f'famsa {fasta_file} {raw_aligned_file}')
         final_aligned_file = align_dir / (fasta_file.stem + '.aln.faa')
-        run_external(f'BMGE -i {raw_aligned_file} -t AA -o {final_aligned_file}')
+        run_external(f'clipkit {raw_aligned_file} -o {final_aligned_file} -m kpic-smart-gap')
 
 
 def concatenate_alignments(align_dir: Path, delimiter: str):

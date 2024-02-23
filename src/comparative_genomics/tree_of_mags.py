@@ -10,7 +10,7 @@ from comparative_genomics.blast import TabularBlastParser
 from comparative_genomics.orthologues import merge_and_code_fasta_input, cluster, align, concatenate_alignments
 
 
-VERSION = "0.16"
+VERSION = "0.17"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
@@ -127,7 +127,7 @@ def collect_seqs(hmm_file: Path, fasta_dir: Path, genes_dir: Path, file_extensio
                 if orf['id'] in unique_orf_ids:
                     raise Exception(f'Fasta seq ids should be unique within each file. Duplicate: {orf["id"]}')
                 unique_orf_ids.add(orf['id'])
-        if not hmm_results_file.exists() and hmm_results_file.stat().st_size:
+        if not hmm_results_file.exists() or not hmm_results_file.stat().st_size:
             run_external(f'hmmscan -E 1e-25 --domtblout {hmm_results_file} {hmm_file} {fasta_file}')
         if not gene_file.exists() or not gene_file.stat().st_size:
             orfs_already_done = set()

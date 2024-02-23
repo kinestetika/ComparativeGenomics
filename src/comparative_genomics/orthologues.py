@@ -7,7 +7,7 @@ from collections import Counter
 from comparative_genomics.fasta import FastaParser, write_fasta
 from comparative_genomics.blast import TabularBlastParser
 
-VERSION = "0.16"
+VERSION = "0.17"
 START_TIME = time.monotonic()
 LOG_FILE = Path('log.txt')
 
